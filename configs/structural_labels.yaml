@@ -1,0 +1,17 @@
+# Short structural labels the layout/planner may print even though they are not in the brief (they are part of a component's
+# meaning, e.g. the caption on a guest card). Matched case-insensitively against the whole text. Keep this list tiny.
+labels:
+  - Chief Guest
+  - Guest of Honour
+  - Special Guest
+  - Speakers
+  - Keynote Speaker
+  - Register Now
+  - Scan to Register
+  - In Association With
+  - Supported By
+  - Presented By
+  - Powered By
+patterns:
+  - '^day \d+ speakers$'
+  - '^day \d+$'

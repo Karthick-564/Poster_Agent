@@ -1,0 +1,25 @@
+[project]
+name = "poster-agent"
+version = "0.1.0"
+description = "Brand-aware event poster agent: plan -> layout -> VectorCraft (native MCP) -> checks -> critic"
+requires-python = ">=3.12"
+dependencies = [
+    "mcp",
+    "pydantic>=2",
+    "pyyaml",
+    "pillow",
+    "python-dotenv",
+    "httpx",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[tool.setuptools.packages.find]
+include = ["poster_agent*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-m 'not slow'"  # plain `pytest -q` is the fast suite; `pytest -q -m slow` runs the VectorCraft render tests
+markers = ["slow: renders through VectorCraft (run before a release or after changing the compiler/checks)"]

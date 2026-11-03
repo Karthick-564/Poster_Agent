@@ -1,0 +1,54 @@
+# ==========================================================================================================================
+# ALLOW-LIST: everything is ignored unless it is named below. This repo is PUBLIC and must never contain institution assets
+# (logos, brand guideline PDFs, real posters, real briefs, headshots, brand profiles) or secrets. When adding a new top-level
+# file or folder, add it here deliberately.
+# ==========================================================================================================================
+/*
+
+# --- code, docs, config that belong in the repo
+!/.gitignore
+!/.env.example
+!/README.md
+!/pyproject.toml
+!/run_poster.py
+!/poster_agent/
+!/scripts/
+!/tests/
+!/docs/
+!/configs/
+!/brands/
+
+# --- inside brands/: only generic resources. Per-institution folders (brands/<school>/ = logos + a profile derived from the
+#     institution's brand guidelines) are institution assets and stay local.
+/brands/*
+!/brands/fonts/
+!/brands/icons/
+
+# --- inside the package / tests: material built from real institution posters or real events stays local
+/poster_agent/fixtures/
+/tests/data/
+
+# --- never, anywhere: secrets, caches, outputs, and binary media that could carry institution artwork
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+runs/
+data/
+tools/
+.graph-indexer/
+*.png
+*.jpg
+*.jpeg
+*.webp
+*.gif
+*.pdf
+*.vectorcraft
+*.zip
+*.psd
+*.ai
