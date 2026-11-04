@@ -18,7 +18,10 @@ from .schema import PlanOutput
 
 SEPARATORS = re.compile(r"\s*[|•·\n]\s*")  # a block may stack several brief lines, one per line
 HEX = re.compile(r"^#[0-9a-fA-F]{6}$")
-LOGO_COMPONENTS = {"LogoBlock", "LogoTitleRow"}
+LOGO_COMPONENTS = {"LogoBlock", "LogoTitleRow", "HeaderRow", "LogoStrip"}
+IMAGE_COMPONENTS = {"HeroImage", "BottomCutout", "PhotoFade", "ImageBlock", "PhotoStrip", "SpeakerGrid", "ChiefGuestCard"}
+SPARSE_WORDS = 45  # a brief with fewer words than this cannot fill a poster with text alone
+ANCHORS_AT_BOTTOM = {"BottomCutout", "PhotoFade", "InfoBar"}  # what can close a skeleton at the bottom edge
 # Generated imagery must describe objects/atmosphere only: no printed text, logos or people (guardrail 4).
 FORBIDDEN_ART = re.compile(r"\b(text|typograph\w*|letter\w*|words?|writing|captions?|logos?|brands?|"
                            r"person|people|man|men|woman|women|face|faces|portrait\w*|human\w*|students?|crowd\w*)\b", re.I)
@@ -72,6 +75,36 @@ def tokens(text: str) -> list[str]:
 
 def validate_plan(plan: PlanOutput, brief: Brief, brand: BrandProfile, inventory: dict[str, InventoryItem]) -> list[str]:
     errs: list[str] = []
+    from poster_agent.layout.zones import TEMPLATES
+    if plan.template not in TEMPLATES:
+        errs.append(f"template {plan.template!r} is unknown; use one of {sorted(TEMPLATES)}")
+    else:
+        zones = TEMPLATES[plan.template].zones
+        for c in plan.components:
+            if c.zone is not None and c.anchor == "flow" and c.zone not in zones:
+                errs.append(f"{c.id}: zone {c.zone!r} does not exist in template {plan.template!r}; zones are {sorted(zones)}")
+            if c.zone is not None and c.anchor != "flow":
+                errs.append(f"{c.id}: only flow components take a zone (anchor {c.anchor!r} bands are pinned to the edge)")
+        words = len(" ".join(brief.corpus()).split()) if brief is not None else 999
+        has_image = any(c.component in IMAGE_COMPONENTS and (c.component != "ChiefGuestCard" or c.content.get("photo")) for c in walk(plan.components))
+        if plan.look in ("clean_light", "brand_blue", "tint_soft") and not has_image and words < SPARSE_WORDS:
+            errs.append(f"this brief has little text ({words} words) and the plan has no image, so the poster would be mostly empty: add ONE "
+                        "image as the bottom anchor, a BottomCutout of an object related to the event (declare it in generated_assets), or a "
+                        "supplied photo (PhotoFade / ImageBlock)")
+        generated_ids = {a.id for a in plan.generated_assets}
+        if plan.background.kind == "generated" and any(
+                c.component in ("HeroImage", "BottomCutout") and c.content.get("asset") in generated_ids for c in walk(plan.components)):
+            errs.append("one image idea per poster: generated background art OR a generated cutout, never both (the cutout would clash "
+                        "with the art); use a plain ground with the cutout, or the art without a cutout")
+        if plan.template in ("house", "split", "photo_led") and not any(
+                c.anchor == "bottom" and c.component in ANCHORS_AT_BOTTOM for c in plan.components):
+            errs.append(f"the {plan.template} skeleton ends with an anchor at the bottom edge: a BottomCutout (generated object or "
+                        "supplied cutout), a PhotoFade (supplied photo) or an InfoBar band, anchor 'bottom'")
+        if plan.template == "split" and not any(c.component == "BottomCutout" and c.content.get("beside") for c in plan.components):
+            errs.append("the split skeleton needs a BottomCutout with beside: true standing next to the text column")
+        if "art" in zones and not any(c.zone == "art" for c in plan.components):
+            errs.append(f"template {plan.template!r} has an art zone but no component is in it: put a HeroImage / ImageBlock / PhotoFade in "
+                        "zone 'art', or use template classic")
     try:
         get_format(plan.format)
     except ValueError as e:
@@ -170,15 +203,29 @@ def validate_plan(plan: PlanOutput, brief: Brief, brand: BrandProfile, inventory
                 errs.append(f"{where}: treatment is only for PhotoFade / PhotoStrip (never logos or people portraits)")
             elif c.content["treatment"] not in brand.photo_treatments:
                 errs.append(f"{where}: treatment {c.content['treatment']!r} not in the brand's allowed {brand.photo_treatments}")
+        if (c.component == "LogoBlock" and plan.align == "left" and not plan.look and any(c is t for t in plan.components)
+                and any(getattr(brief, f, None) for f in ("date", "time", "venue"))):
+            errs.append(f"{where}: in a left-aligned poster a lone LogoBlock leaves the rest of its row empty; use a HeaderRow "
+                        "(logo on one side, the date/time/venue lines on the other)")
+        if c.component == "Panel":
+            for ch in c.children:
+                if ch.component in LOGO_COMPONENTS:
+                    errs.append(f"{where}: do not put the logo ({ch.id}) inside a Panel: that makes a large empty box; "
+                                "place the LogoBlock directly in the flow")
+                if ch.component in ("BigTitle", "BigWord"):
+                    errs.append(f"{where}: {ch.component} {ch.id!r} is the poster's graphic; it does not go inside a Panel")
         if c.component == "IconRow":
             from poster_agent.layout.structure import icon_names
             known = set(icon_names())
             for it in c.content.get("items") or []:
-                if not isinstance(it, dict) or it.get("icon") not in known:
-                    errs.append(f"{where}: icon {(it or {}).get('icon') if isinstance(it, dict) else it!r} is not in ICONS")
+                if not isinstance(it, dict) or not it.get("label"):
+                    errs.append(f"{where}: every IconRow item needs a label (verbatim brief text)")
+                elif it.get("icon") is not None and it["icon"] not in known:  # the icon is only a hint; a wrong name is still reported
+                    errs.append(f"{where}: icon {it['icon']!r} is not in ICONS")
         if c.children and c.component not in ("Panel", "Columns"):
             errs.append(f"{where}: only Panel and Columns may have children")
-        if c.component == "LogoBlock" and bgp.kind == "generated" and not c.content.get("plate"):
+        if (c.component == "LogoBlock" and bgp.kind == "generated" and not c.content.get("plate")
+                and not brand.logos.get(c.content.get("logo") or brand.default_logo, brand.logo()).solid_field):
             errs.append(f"{where}: the background is generated art (textured, not a flat field): brand logos need a flat light "
                         "field, so set plate: true on the LogoBlock")
         if c.component in LOGO_COMPONENTS:

@@ -45,6 +45,14 @@ def _dilate(m: np.ndarray, r: int) -> np.ndarray:
     return out
 
 
+def planned_emptiness(placed, canvas_w: float, canvas_h: float, scale: float = 0.5) -> EmptinessReport:
+    """Empty space estimated from the PLANNED boxes of a poster on a plain ground (before any render): every text, image and panel box
+    counts as occupied, everything else is flat. Used to warn the planner about a sparse layout while it can still change the plan."""
+    img = Image.new("L", (max(int(canvas_w * scale), 8), max(int(canvas_h * scale), 8)), 200)
+    boxes = [e.box for e in placed if not e.props.get("decorative") and e.role not in ("adapt_scrim", "adapt_fade")]
+    return measure_emptiness(img, scale, filled=boxes)
+
+
 def measure_emptiness(img: Image.Image, scale: float, filled: list[Box] | None = None) -> EmptinessReport:
     """`scale` = pixels per point of `img`; `filled` = designed blocks (in pt) that count as occupied even if smooth."""
     g = np.asarray(img.convert("L"), dtype=np.float32)

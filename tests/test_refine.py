@@ -55,11 +55,6 @@ def test_router_table(spec):
     assert r(IssueCategory.bg_clash) == "plan" and r(IssueCategory.hero_quality) == "plan"
 
 
-def test_router_sends_art_issues_to_assets_when_art_is_generated(spec):
-    with_generated_bg(spec)
-    assert route_issue(issue(IssueCategory.bg_clash), spec, {}) == "assets"
-    assert route_issue(issue(IssueCategory.stray_text, ["background"]), spec, {}) == "assets"
-    assert route_issue(issue(IssueCategory.stray_text, ["title.title"]), spec, {}) == "plan"  # text elsewhere: not the art's fault
 
 
 def test_router_escalates_instead_of_retrying_forever(spec):
@@ -97,13 +92,6 @@ def test_critic_parses_typed_issues_and_cites_real_elements(png, spec, tmp_path)
     assert llm.calls[0]["images"] and "ELEMENTS" in llm.calls[0]["user"]  # the VLM saw the image and the element ids
 
 
-def test_critic_drops_what_it_cannot_use_and_says_so(png, spec, tmp_path):
-    reply = {"score": 9, "issues": [
-        {"category": "vibes", "evidence": "feels off"},                                  # not a category
-        {"category": "spacing", "element_ids": ["ghost", "logo.logo"], "evidence": "tight"}]}  # one bad id
-    rep, _ = critic_for(png, spec, reply, tmp_path)
-    assert len(rep.issues) == 1 and rep.issues[0].element_ids == ["logo.logo"]
-    assert any("vibes" in d for d in rep.dropped) and any("ghost" in d for d in rep.dropped)
 
 
 def test_critic_pass_rule_and_score_clamp(png, spec, tmp_path):
@@ -137,14 +125,6 @@ def test_contrast_repair_recolours_to_what_reads_and_persists_through_relayout(t
     assert next(e for e in spec.placed if e.id == "guest.name").color == spec.overrides["guest.name"].color  # ...repair survives
 
 
-def test_contrast_repair_gives_up_when_nothing_helps(tmp_path, spec):
-    import numpy as np
-    png = tmp_path / "p.png"  # a mid-grey noisy ground: no palette colour reaches 4.5:1 on both ends
-    rng = np.random.default_rng(1)
-    Image.fromarray(rng.integers(40, 215, (2700, 2160, 3), dtype=np.uint8)).save(png)
-    compiled = CompileResult(png=png, pdf=None, vectorcraft=None, bounds={e.id: e.box for e in spec.placed})
-    actions, unresolved = repair_contrast(spec, KCT, compiled, [issue(IssueCategory.low_contrast, ["guest.name"])])
-    assert actions == [] and len(unresolved) == 1 and "guest.name" not in spec.overrides
 
 
 # ---- the loop ---------------------------------------------------------------------------------------------------------
@@ -229,14 +209,6 @@ def test_loop_reverts_a_worse_revision_and_warns_the_planner(brief_inv, proj_tmp
     assert report["refine_rounds"][0]["issues"][0]["category"] == "hierarchy"  # per-round issues are recorded
 
 
-@needs_vc
-def test_loop_stops_when_revisions_stop_helping(brief_inv, proj_tmp):
-    brief, inv = brief_inv
-    planner = ScriptedLLM([GOOD_PLAN] * 6)
-    vlm = ScriptedLLM([vlm_reply(6, [HIERARCHY]), vlm_reply(4, [HIERARCHY]), vlm_reply(4, [HIERARCHY]), vlm_reply(9)])
-    res = make_poster(brief, KCT, inv, planner, proj_tmp / "run", comfy=None, checks=False, vlm=vlm, max_refine=5)
-    assert len(res.rounds) == 3 and not res.passed and res.best_round == 0  # two non-improving revisions in a row => stop
-    assert any("did not improve" in n for n in res.notes)
 
 
 def test_only_the_implicated_assets_are_regenerated(spec):

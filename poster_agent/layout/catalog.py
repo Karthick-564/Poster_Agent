@@ -13,9 +13,10 @@ CATALOG: dict[str, dict[str, Any]] = {
                 "(LogoBlock or LogoTitleRow).",
         "variants": ["default"],
         "content": {"logo": "brand logo name (optional; see BRAND.logos)", "align": "left|center|right",
-                    "width_pct": "number, % of canvas width (optional; never below the logo's minimum)",
-                    "plate": "true or a colour name: a flat plate that hugs the logo. REQUIRED when the poster background is dark "
-                             "(brand logos need a flat light field); use this instead of wrapping the logo in a full-width Panel"},
+                    "width_pct": "number, % of canvas width (optional; never below the logo's minimum)", "band": "colour: full-width band behind the logo",
+                    "plate": "true or a colour name: a flat plate that hugs the logo. ONLY for logo artwork that has no field of its "
+                             "own (BRAND.logos[...].solid_field false) on a dark/busy ground; logos with solid_field true "
+                             "(e.g. a navy square) need NO plate: never add one"},
         "required": [], "text_keys": [], "asset_keys": [], "color_keys": ["plate"], "font_keys": [],
     },
     "LogoTitleRow": {
@@ -32,7 +33,8 @@ CATALOG: dict[str, dict[str, Any]] = {
         "content": {"eyebrow": "text", "title": "text", "subtitle": "text", "tagline": "text", "align": "left|center|right",
                     "eyebrow_color": "colour", "title_color": "colour", "subtitle_color": "colour", "tagline_color": "colour",
                     "eyebrow_tracking": "number letter-spacing", "max_lines": "int", "title_factor": "number size multiplier",
-                    "title_font": "font role"},
+                    "title_font": "font role",
+                    "title_style": "none|accent_last|accent_first|weight_split|highlight_last: colour, weight or a solid bar behind the last title line"},
         "required": ["title"], "text_keys": ["eyebrow", "title", "subtitle", "tagline"], "asset_keys": [],
         "color_keys": ["eyebrow_color", "title_color", "subtitle_color", "tagline_color"], "font_keys": ["title_font"],
     },
@@ -55,7 +57,7 @@ CATALOG: dict[str, dict[str, Any]] = {
     "InfoBar": {
         "desc": "Event facts. variant 'band' = full-width block, one line per item (use anchor top|bottom to pin it to an edge). "
                 "variant 'columns' = one row split into equal cells (e.g. time | date | venue).",
-        "variants": ["band", "columns"],
+        "variants": ["band", "columns", "footer"],
         "content": {"items": "list of text", "fill": "colour", "fill_to": "colour (gradient end, optional)", "text_color": "colour"},
         "required": ["items"], "text_keys": ["items"], "asset_keys": [], "color_keys": ["fill", "fill_to", "text_color"], "font_keys": [],
     },
@@ -68,10 +70,13 @@ CATALOG: dict[str, dict[str, Any]] = {
         "color_keys": ["text_color", "edge", "fill"], "font_keys": ["font_role"],
     },
     "ChiefGuestCard": {
-        "desc": "A featured guest: optional label, circular photo, name, designation lines.",
+        "desc": "A featured guest: optional label (CHIEF GUEST), the supplied photo cropped to just the FACE in a circle, the name (largest "
+                "line), designation lines. This is how a supplied guest photo is shown. Without a photo it still gives the name a hierarchy.",
         "variants": ["default"],
         "content": {"label": "text e.g. CHIEF GUEST", "photo": "asset id", "name": "text", "lines": "list of text",
-                    "photo_d_pct": "number photo diameter % of canvas width"},
+                    "photo_d_pct": "number photo diameter % of canvas width", "align": "left|center|right",
+                    "name_color": "colour", "lines_color": "colour", "label_color": "colour",
+                    "framing": "face (default: just the face in the circle)|head|head_and_shoulders|half_body: the supplied photo is cropped, never altered"},
         "required": ["name"], "text_keys": ["label", "name", "lines"], "asset_keys": ["photo"], "color_keys": [], "font_keys": [],
     },
     "SpeakerGrid": {
@@ -79,7 +84,7 @@ CATALOG: dict[str, dict[str, Any]] = {
                 "[{name, designation, asset}].",
         "variants": ["default"],
         "content": {"speakers": "list of {name, designation, asset}", "cols": "int columns (default 4)",
-                    "role_max_lines": "int"},
+                    "role_max_lines": "int", "framing": "head|head_and_shoulders|half_body: reframe the supplied photos by cropping"},
         "required": ["speakers"], "text_keys": ["speakers[].name", "speakers[].designation"], "asset_keys": ["speakers[].asset"],
         "color_keys": [], "font_keys": [],
     },
@@ -102,7 +107,8 @@ CATALOG: dict[str, dict[str, Any]] = {
                 "generated_assets (or a supplied photo).",
         "variants": ["default"],
         "content": {"asset": "asset id", "height_pct": "number % of canvas height (a minimum: the hero also grows into spare space)",
-                    "max_width_pct": "number", "align": "left|center|right", "fill": "bool, default true: grow into spare height"},
+                    "max_width_pct": "number", "align": "left|center|right", "fill": "bool, default true: grow into spare height",
+                    "frame": "bool: draw the image in a card (default: yes for photos, no for generated cutouts)"},
         "required": ["asset"], "text_keys": [], "asset_keys": ["asset"], "color_keys": [], "font_keys": [],
     },
     "BigTitle": {
@@ -111,9 +117,53 @@ CATALOG: dict[str, dict[str, Any]] = {
         "variants": ["default"],
         "content": {"lines": "list of text, one per line (or title with newlines)", "colors": "list of colour names, one per line",
                     "pill": "text for a pill label under the title", "pill_fill": "colour", "pill_text": "colour",
-                    "cap_pct": "number, max line height % of poster height (default 13)", "align": "left|center|right"},
+                    "cap_pct": "number, max line height % of poster height (default 13)", "align": "left|center|right",
+                    "font_roles": "list of font roles per line, e.g. [light, display_heavy] for a two-weight title"},
         "required": [], "text_keys": ["lines", "title", "pill"], "asset_keys": [],
         "color_keys": ["colors", "pill_fill", "pill_text", "color"], "font_keys": ["font_role"],
+    },
+    "FactLine": {
+        "desc": "The date | time | venue line: the brief's own words side by side with thin vertical rules between them (one item "
+                "per line when they do not fit). Use it for the key facts right under the headline.",
+        "variants": ["default"],
+        "content": {"items": "list of verbatim text (date, time, venue)", "color": "colour", "rule_color": "colour",
+                    "align": "left|center|right", "upper": "bool (default true)", "factor": "number size factor (default 0.8)"},
+        "required": ["items"], "text_keys": ["items"], "asset_keys": [], "color_keys": ["color", "rule_color"], "font_keys": [],
+    },
+    "FactStrip": {
+        "desc": "Labelled facts in columns: a small spaced-capitals label (DATE, TIME, VENUE, FEE, MODE, DURATION, ELIGIBILITY, "
+                "CONTACT, REGISTER, DEADLINE) above each verbatim value, thin rules between columns. For 3-8 short facts.",
+        "variants": ["default"],
+        "content": {"items": "list of {label, value}", "cols": "int columns per row (max 4)", "label_color": "colour",
+                    "value_color": "colour", "rule_color": "colour"},
+        "required": ["items"], "text_keys": ["items[].label", "items[].value"], "asset_keys": [],
+        "color_keys": ["label_color", "value_color", "rule_color"], "font_keys": [],
+    },
+    "LogoStrip": {
+        "desc": "The header strip when partner logos exist: our logo first, then partner logos, one height, thin rules between.",
+        "variants": ["default"],
+        "content": {"logo": "brand logo name", "partners": "list of partner-logo asset ids", "height_pct": "number (default 6)",
+                    "align": "left|center|right", "band": "colour: full-width band behind the strip"},
+        "required": [], "text_keys": [], "asset_keys": ["partners"], "color_keys": [], "font_keys": [],
+    },
+    "BottomCutout": {
+        "desc": "The bottom anchor: a cutout (a generated object from generated_assets; a supplied person photo only when the brief asks "
+                "for a standing cutout, its background is removed, the photo itself is not altered) standing on the bottom "
+                "edge; anchor 'bottom'. It grows to fill the height the content leaves free, so the poster never has an empty lower "
+                "part. beside true = it stands next to the text column (split skeleton) instead of below the content.",
+        "variants": ["default"],
+        "content": {"asset": "asset id", "align": "left|center|right", "height_pct": "number min height % (default 28)",
+                    "max_pct": "number max height % (default 38)", "max_width_pct": "number (default 70; 42 beside)", "beside": "bool", "stage": "bool, default true: a brand-colour arch and soft light behind a supplied person",
+                    "framing": "head|head_and_shoulders|half_body: reframe a supplied person photo by cropping first"},
+        "required": ["asset"], "text_keys": [], "asset_keys": ["asset"], "color_keys": [], "font_keys": [],
+    },
+    "QRBlock": {
+        "desc": "A vector QR code generated from `url` (the URL must appear in the brief) with an optional verbatim caption under it. Use "
+                "it when the brief gives a registration / website link and the poster has room for a code.",
+        "variants": ["default"],
+        "content": {"url": "text from the brief", "size_pct": "number % of canvas width (default 20)", "color": "colour (dark modules)",
+                    "align": "left|center|right", "caption": "verbatim text under the code", "caption_color": "colour"},
+        "required": ["url"], "text_keys": ["url", "caption"], "asset_keys": [], "color_keys": ["color", "caption_color"], "font_keys": [],
     },
     "TabBanner": {
         "desc": "A solid brand tab hanging from the top edge with one line (strapline / call to action). anchor 'top'.",
@@ -142,6 +192,7 @@ CATALOG: dict[str, dict[str, Any]] = {
         "variants": ["default"],
         "content": {"asset": "asset id", "height_pct": "number % of poster height (default 38)",
                     "fade_pct": "number % of the photo height that fades (default 45)", "fade_color": "colour (default: page colour)",
+                    "max_pct": "number max height % when it grows to fill the free height (default 60)",
                     "focus": "[x, y] 0..1", "treatment": "duotone (optional): brand-colour treatment of a SUPPLIED photo",
                     "duotone": "[dark colour, light colour] palette names (default [primary, surface])"},
         "required": ["asset"], "text_keys": [], "asset_keys": ["asset"], "color_keys": ["fade_color"], "font_keys": [],
@@ -150,7 +201,7 @@ CATALOG: dict[str, dict[str, Any]] = {
         "desc": "A row of vector icon + label columns separated by thin rules (e.g. DOMAINS OF INTEREST). Pick each icon NAME from "
                 "ICONS; labels must be verbatim brief text. Gives a structured band that fills the middle of the poster.",
         "variants": ["default"],
-        "content": {"items": "list of {icon: icon name, label: text}", "icon_color": "colour", "label_color": "colour"},
+        "content": {"items": "list of {label: text, icon: optional icon name hint}; the system picks the icon that matches the label", "icon_color": "colour", "label_color": "colour"},
         "required": ["items"], "text_keys": ["items[].label"], "asset_keys": [], "color_keys": ["icon_color", "label_color"],
         "font_keys": [],
     },
@@ -162,6 +213,15 @@ CATALOG: dict[str, dict[str, Any]] = {
                     "caption_color": "colour", "word_pct": "number, word width % when the caption is beside it"},
         "required": ["text"], "text_keys": ["text", "caption"], "asset_keys": [], "color_keys": ["color", "caption_color"],
         "font_keys": [],
+    },
+    "HeaderRow": {
+        "desc": "The institution logo on one side and 1-4 short lines (date, time, venue) aligned on the other: a flexible header "
+                "instead of the centred logo-then-title stack. Counts as the logo.",
+        "variants": ["default"],
+        "content": {"side": "left|right (logo side, default left)", "lines": "list of verbatim text lines", "logo": "brand logo name",
+                    "logo_pct": "number, logo width % of canvas (default 18)", "color": "colour", "role": "type role",
+                    "band": "colour: a full-width band behind the header strip (set by the look)"},
+        "required": [], "text_keys": ["lines"], "asset_keys": [], "color_keys": ["color"], "font_keys": [],
     },
     "Panel": {
         "desc": "Filled container that lays its `children` out as an inner stack (e.g. a navy hero panel with logo + title).",

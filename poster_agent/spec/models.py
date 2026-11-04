@@ -141,6 +141,7 @@ class ComponentSpec(BaseModel):
     content: dict[str, Any] = Field(default_factory=dict)
     asset_ids: list[str] = Field(default_factory=list)
     emphasis: Literal["hero", "primary", "secondary", "tertiary"] = "primary"
+    zone: str | None = None  # named region of the poster's layout template this component belongs to (flow components only)
     anchor: Literal["flow", "top", "bottom"] = "flow"  # top/bottom: full-bleed bands pinned to a canvas edge
     children: list["ComponentSpec"] = Field(default_factory=list)  # containers (Panel) lay these out inside
 
@@ -263,6 +264,10 @@ class PosterSpec(BaseModel):
     issues: list[Issue] = Field(default_factory=list)
     overrides: dict[str, ElementOverride] = Field(default_factory=dict)  # placed-element id -> repair
     align: Literal["center", "left"] = "center"  # composition: symmetric or left-aligned (editorial)
+    flow_valign: Literal["top", "balanced", "center", "bottom"] = "balanced"  # where the content block sits in the free height
+    flow_region: tuple[float, float, float, float] = (0.0, 0.0, 1.0, 1.0)  # x0, y0, x1, y1 as fractions of the safe box: where flow content may sit
+    template: str = "classic"  # layout template (layout/zones.py): which named zones components can be assigned to
+    type_style: Literal["classic", "bold", "elegant", "editorial", "condensed"] = "classic"  # typography preset
     decorations: list[Decoration] = Field(default_factory=list)
     version: int = 0
 

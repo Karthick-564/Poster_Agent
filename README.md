@@ -18,7 +18,7 @@ Qwen cutouts) -> compile (native VectorCraft MCP, as a client) -> checks (OCR, c
 6. Reports state only what a check actually measured.
 
 ## Setup
-- Python 3.12, `pip install -e .[dev]`.
+- Python 3.12: `python -m venv .venv`, then `.venv\Scripts\python -m pip install -r requirements.txt` (or `pip install -e .[dev]`).
 - Copy `.env.example` to `.env` and fill in your own keys / URLs (ComfyUI, Gemini, Groq, VectorCraft CLI path).
 - VectorCraft (the CLI and desktop app) is **not** included; install it separately and point `VECTORCRAFT_CLI` at it.
 - A ComfyUI server with an image model (Flux / Qwen-Image) is optional: without it use `--no-gen`.

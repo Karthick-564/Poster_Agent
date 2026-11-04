@@ -19,26 +19,50 @@ def _status(report: dict) -> str:
     return "passed checks and vision review" if report.get("reviewed") else "passed checks only (no vision review)"
 
 
-def publish(run_dir: Path, outputs_dir: Path = OUTPUTS) -> Path | None:
-    """Copy a finished run's final PNG to outputs/<name>.png (plus the accepted polished version, if any) and update the index."""
+def _copy(src: Path, dst: Path, tries: int = 4) -> None:
+    """shutil.copy with retries: on Windows the destination is briefly locked while an image viewer / IDE preview has it open."""
+    for k in range(tries):
+        try:
+            shutil.copy(src, dst)
+            return
+        except OSError:
+            if k == tries - 1:
+                raise
+            time.sleep(1.0 + k)
+
+
+def _free_name(outputs_dir: Path, stem: str, suffix: str = ".png") -> str:
+    """First of <stem>.png, <stem>_2.png, <stem>_3.png ... that does not exist yet: earlier outputs are never overwritten."""
+    n = 1
+    while True:
+        name = f"{stem}{suffix}" if n == 1 else f"{stem}_{n}{suffix}"
+        if not (outputs_dir / name).exists():
+            return name
+        n += 1
+
+
+def publish(run_dir: Path, outputs_dir: Path = OUTPUTS, include_failed: bool = False) -> Path | None:
+    """Copy a finished run's final PNG to outputs/ under a name that is not taken yet (<name>.png, <name>_2.png, ...; existing files are
+    kept as they are), plus the accepted polished version if any, and add an entry to the index."""
     run_dir = Path(run_dir)
     report = json.loads((run_dir / "report.json").read_text(encoding="utf-8"))
-    if not report.get("ok"):
-        return None
+    if not report.get("ok") or (not report.get("passed") and not include_failed):
+        return None  # a poster that failed its checks is not a showcase result (publish it explicitly with include_failed)
     name = run_dir.name
     outputs_dir.mkdir(parents=True, exist_ok=True)
-    final = outputs_dir / f"{name}.png"
-    shutil.copy(run_dir / Path(report["outputs"]["png"]).name, final)
+    final = outputs_dir / _free_name(outputs_dir, name)
+    _copy(run_dir / Path(report["outputs"]["png"]).name, final)
     entry = {"name": name, "image": final.name, "status": _status(report), "kept_round": report.get("best_round"),
              "published": time.strftime("%Y-%m-%d %H:%M")}
     pr = run_dir / "polish" / "polish_report.json"
     if pr.exists():
         polish = json.loads(pr.read_text(encoding="utf-8"))
         if polish.get("accepted") and polish.get("png") and Path(polish["png"]).exists():
-            shutil.copy(polish["png"], outputs_dir / f"{name}_polished.png")
-            entry["polished_image"] = f"{name}_polished.png"
+            pol = outputs_dir / _free_name(outputs_dir, f"{final.stem}_polished")
+            shutil.copy(polish["png"], pol)
+            entry["polished_image"] = pol.name
     index_file = outputs_dir / "index.json"
     index = json.loads(index_file.read_text(encoding="utf-8")) if index_file.exists() else []
-    index = [e for e in index if e["name"] != name] + [entry]
-    index_file.write_text(json.dumps(sorted(index, key=lambda e: e["name"]), indent=1, ensure_ascii=False), encoding="utf-8")
+    index = index + [entry]
+    index_file.write_text(json.dumps(sorted(index, key=lambda e: (e["name"], e["published"])), indent=1, ensure_ascii=False), encoding="utf-8")
     return final

@@ -10,12 +10,15 @@
 !/.env.example
 !/README.md
 !/pyproject.toml
+!/requirements.txt
 !/run_poster.py
 !/poster_agent/
 !/scripts/
 !/tests/
 !/docs/
 !/configs/
+!/skills/
+!/eval/
 !/brands/
 
 # --- inside brands/: only generic resources. Per-institution folders (brands/<school>/ = logos + a profile derived from the
@@ -23,6 +26,10 @@
 /brands/*
 !/brands/fonts/
 !/brands/icons/
+!/brands/_example/
+
+# --- inside eval/: the fictional evaluation briefs are shared; results (posters, logs) stay local
+/eval/results/
 
 # --- inside the package / tests: material built from real institution posters or real events stays local
 /poster_agent/fixtures/
@@ -52,3 +59,6 @@ tools/
 *.zip
 *.psd
 *.ai
+
+# the example brand's placeholder logos are generated, not an institution's artwork
+!/brands/_example/logos/*.png

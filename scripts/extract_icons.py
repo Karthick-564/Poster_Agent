@@ -14,7 +14,9 @@ NAMES = """cog settings wrench cpu zap battery-charging car bot code terminal ci
 book-open users user megaphone handshake briefcase banknote calendar clock map-pin phone mail globe trophy award lightbulb rocket shield
 leaf heart-pulse palette camera film music mic newspaper file-text clipboard-list line-chart bar-chart pen-tool layers database wifi radio
 plane truck factory building hammer ruler drafting-compass scale languages message-circle star target trending-up droplets sun wind flame
-thermometer brain dna stethoscope pill dumbbell medal gamepad-2 monitor smartphone satellite sprout store landmark scroll ticket gift""".split()
+thermometer brain dna stethoscope pill dumbbell medal gamepad-2 monitor smartphone satellite sprout store landmark scroll ticket gift
+timer footprints bike swords goal music-2 mic-vocal drama shirt sparkles party-popper guitar piano volleyball flag activity heart handshake
+dribbble person-standing weight hand-fist crown laptop calculator chart-bar clipboard-check calendar-days tree-pine recycle heart-handshake mountain""".split()
 
 
 def element(tag: str, attrs: dict) -> str:

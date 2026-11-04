@@ -8,7 +8,7 @@ from pathlib import Path
 from PIL import Image
 
 from poster_agent.checks.pixels import hex_rgb, rel_luminance
-from poster_agent.spec import Box, ComponentSpec, ElementKind, IssueCategory, PlacedElement
+from poster_agent.spec import AssetKind, Box, ComponentSpec, ElementKind, IssueCategory, PlacedElement
 from poster_agent.spec.brand import ROOT
 from poster_agent.spec.formats import MM_TO_PT
 
@@ -43,19 +43,86 @@ class LogoBlock(Component):
         logo_name = c.get("logo") or ctx.brand.default_logo
         logo = ctx.brand.logo(logo_name)
         clear = ctx.brand.logo_rules.clear_space_mm * MM_TO_PT
-        pct = max(logo.min_width_pct, c.get("width_pct", 16.0))
+        rules = ctx.brand.logo_rules
+        pct = min(max(logo.min_width_pct, c.get("width_pct", 16.0)), max(rules.max_width_pct, logo.min_width_pct))  # brand maximum
         lw = pct / 100.0 * ctx.canvas.width
         lh = lw / logo.aspect
-        align = c.get("align", ctx.align)
-        inset = clear if c.get("plate") else 0.0  # the plate pads the logo by `clear`; it must stay inside the safe area
+        cap_h = rules.max_height_pct / 100.0 * ctx.canvas.height
+        if lh > cap_h and cap_h * logo.aspect >= logo.min_width_pct / 100.0 * ctx.canvas.width:  # tall logo: cap its height too
+            lh, lw = cap_h, cap_h * logo.aspect
+        align = c.get("align", ctx.align) if (ctx.align == "left" or c.get("force_align")) else "center"  # one axis per poster
+        plated = bool(c.get("plate")) and not logo.solid_field  # a logo with its own solid field needs no plate
+        inset = clear if plated else 0.0  # the plate pads the logo by `clear`; it must stay inside the safe area
         lx = {"left": x + inset, "center": x + (w - lw) / 2, "right": x + w - lw - inset}[align]
         el = _image(f"{spec.id}.logo", "logo", Box(x=lx, y=y + clear, w=lw, h=lh), ctx.brand_logo_asset(logo_name), locked=True)
         els = [el]
-        if c.get("plate"):  # a flat plate hugging the logo and its exclusion zone (for logos that need a light field on a dark ground)
+        if plated:  # a flat plate hugging the logo and its exclusion zone (for logos that need a light field on a dark ground)
             col = c["plate"] if isinstance(c["plate"], str) else "surface"
             els.insert(0, _shape(f"{spec.id}.plate", "logo_plate", Box(x=lx - clear, y=y, w=lw + 2 * clear, h=lh + 2 * clear), z=1,
                                  fill=ctx.color(col)))
         return els, lh + 2 * clear
+
+
+TITLE_STYLES = ("accent_last", "accent_first", "weight_split", "highlight_last")
+
+
+def split_title(el: PlacedElement, ctx, style: str) -> list[PlacedElement]:
+    """One element per line of a wrapped title so the lines can differ in colour or weight. The words and their order are unchanged;
+    a one-line title is returned as it is."""
+    lines = el.text.split("\n")
+    if len(lines) < 2:
+        words = el.text.split()
+        if len(words) < 2:
+            return [el]
+        cut = len(words) - 1 if style in ("accent_last", "weight_split", "highlight_last") else 1  # the last word (or the first) stands apart
+        head, tail = " ".join(words[:cut]), " ".join(words[cut:])
+        if cut == 1 and style == "accent_first":
+            head, tail = words[0], " ".join(words[1:])
+        trk = float(el.props.get("tracking", 0.0))
+        hw = ctx.measurer.width(head + " ", el.font, el.style, el.size, trk)
+        tw = ctx.measurer.width(tail, el.font, el.style, el.size, trk)
+        total = hw + tw
+        x0 = {"left": el.box.x, "center": el.box.cx - total / 2, "right": el.box.right - total}.get(el.align, el.box.x)
+        a = el.model_copy(deep=True, update={"id": f"{el.id}.l0", "text": head, "align": "left", "props": {**el.props, "fit": "autoHeight"},
+                                             "box": Box(x=x0, y=el.box.y, w=hw, h=el.box.h)})
+        b = el.model_copy(deep=True, update={"id": f"{el.id}.l1", "text": tail, "align": "left", "props": {**el.props, "fit": "autoHeight"},
+                                             "box": Box(x=x0 + hw, y=el.box.y, w=tw + 2, h=el.box.h)})
+        out1 = [a, b]
+        target = b if style != "accent_first" or cut != 1 else a
+        if style in ("accent_last", "accent_first"):
+            target.color = ctx.color("accent")
+        elif style == "weight_split":
+            light = ctx.font("light") if "light" in ctx.brand.fonts else None
+            if light is not None:
+                b.font, b.style = light.family, light.style
+        elif style == "highlight_last":
+            pad = 0.18 * el.size
+            out1.insert(0, _shape(f"{el.id}.hl", "highlight_box", Box(x=b.box.x - pad, y=el.box.y + 0.06 * el.box.h, w=tw + 2 * pad,
+                                                                    h=0.9 * el.box.h), z=el.z - 1, fill=ctx.color("primary")))
+            b.color = ctx.color("surface")
+        return out1
+    lead = float(el.props.get("leading") or el.size * 1.2)
+    out = []
+    for i, ln in enumerate(lines):
+        last, first = i == len(lines) - 1, i == 0
+        part = el.model_copy(deep=True, update={"id": f"{el.id}.l{i}", "text": ln,
+                                                "box": Box(x=el.box.x, y=el.box.y + i * lead, w=el.box.w, h=lead),
+                                                "props": {**el.props, "fit": "autoHeight"}})
+        if (style == "accent_last" and last) or (style == "accent_first" and first):
+            part.color = ctx.color("accent")
+        elif style == "highlight_last" and last:  # a solid brand bar behind the last line, its text in the colour made for that fill
+            pad = 0.18 * el.size
+            tw = ctx.measurer.widest([ln], el.font, el.style, el.size, float(el.props.get("tracking", 0.0)))
+            bx = {"left": el.box.x - pad, "center": el.box.cx - tw / 2 - pad, "right": el.box.right - tw - pad}.get(el.align, el.box.x - pad)
+            out.append(_shape(f"{el.id}.hl", "highlight_box", Box(x=bx, y=el.box.y + i * lead + 0.06 * lead, w=tw + 2 * pad, h=0.9 * lead), z=el.z - 1,
+                              fill=ctx.color("primary")))
+            part.color = ctx.color("on_primary")
+        elif style == "weight_split" and last:
+            light = ctx.font("light") if "light" in ctx.brand.fonts else None
+            if light is not None:
+                part.font, part.style = light.family, light.style
+        out.append(part)
+    return out
 
 
 @register
@@ -79,8 +146,15 @@ class TitleStack(Component):
 
         add("eyebrow", c.get("eyebrow"), "label", color=c.get("eyebrow_color", "accent"), tracking=c.get("eyebrow_tracking"),
             upper=True, max_lines=1)
-        add("title", c.get("title"), role, color=c.get("title_color", "text"), max_lines=c.get("max_lines", 3),
-            font_role=c.get("title_font"), factor=c.get("title_factor", 1.0))
+        if c.get("title") and c.get("title_style") in TITLE_STYLES:
+            el, h = ctx.text(f"{spec.id}.title", role, c["title"], x, cur, w, align=align, source=spec.id,
+                             color=c.get("title_color", "text"), max_lines=c.get("max_lines", 3), font_role=c.get("title_font"),
+                             factor=c.get("title_factor", 1.0))
+            els += split_title(el, ctx, c["title_style"])
+            cur += h + _gap(ctx, 0.6)
+        else:
+            add("title", c.get("title"), role, color=c.get("title_color", "text"), max_lines=c.get("max_lines", 3),
+                font_role=c.get("title_font"), factor=c.get("title_factor", 1.0))
         add("subtitle", c.get("subtitle"), "subtitle", color=c.get("subtitle_color", "muted"), max_lines=3)
         add("tagline", c.get("tagline"), "body", color=c.get("tagline_color", "muted"), max_lines=3)
         return els, max(cur - y - _gap(ctx, 0.6), 0.0)
@@ -132,9 +206,47 @@ class Divider(Component):
 class InfoBar(Component):
     """Event facts. 'band': full-bleed block at a canvas edge. 'columns': one row split into equal cells."""
     name = "InfoBar"
-    variants = ("band", "columns")
+    variants = ("band", "columns", "footer")
+
+    def _footer(self, spec, ctx, x, y, w):
+        """The brand footer, the same on every poster: a primary band with a thin accent rule on top, the lines in ONE fixed small size,
+        laid out in up to three columns with hairlines between them (rows of three when there are more), on the poster margins."""
+        c = spec.content
+        items = [t for t in c["items"] if t]
+        H, safe = ctx.canvas.height, ctx.canvas.safe_box
+        pad = 0.018 * H * ctx.scale
+        probe, _ = ctx.text(f"{spec.id}.probe", "caption", items[0], safe.x, y, safe.w, factor=1.1)  # the one footer size (never shrunk per line)
+        fnt, sty, size = probe.font, probe.style, probe.size
+        cols = 1
+        for n in (min(len(items), 3), min(len(items), 2), 1):  # the most columns in which every line still wraps to at most 2 lines
+            if all(len(ls) <= 2 and ctx.measurer.widest(ls, fnt, sty, size) <= safe.w / n * 0.94
+                   for ls in (ctx.measurer.wrap(t, fnt, sty, size, safe.w / n * 0.94) for t in items)):
+                cols = n
+                break
+        cw = safe.w / cols
+        color = c.get("text_color", "surface")
+        els, cur = [], y + pad * 1.3
+        for r in range(0, len(items), cols):
+            row, row_h, cells = items[r:r + cols], 0.0, []
+            for j, it in enumerate(row):
+                inset = 0.0 if j == 0 else 0.04 * cw
+                el, h = ctx.text(f"{spec.id}.item{r + j}", "caption", it, safe.x + j * cw + inset, cur, cw - inset - (0.02 * cw if j < cols - 1 else 0.0),
+                                 color=color, align="left" if (cols > 1 or ctx.align == "left") else "center", size=size, source=spec.id)
+                cells.append(el)
+                row_h = max(row_h, h)
+            for j in range(1, len(row)):
+                els.append(_shape(f"{spec.id}.sep{r + j}", "divider", Box(x=safe.x + j * cw - 1, y=cur, w=2, h=row_h), z=5,
+                                  fill=ctx.color(c.get("rule_color", "accent")), opacity=0.7))
+            els += cells
+            cur += row_h + (0.012 * H * ctx.scale if r + cols < len(items) else 0.0)
+        total = cur - y + pad
+        els.insert(0, _shape(f"{spec.id}.bg", "info_bar", Box(x=x, y=y, w=w, h=total), z=4, fill=ctx.color(c.get("fill", "primary"))))
+        els.insert(1, _shape(f"{spec.id}.rule", "divider", Box(x=x, y=y, w=w, h=max(3.0, 0.0022 * H)), z=5, fill=ctx.color("accent")))
+        return els, total
 
     def build(self, spec, ctx, x, y, w):
+        if spec.variant == "footer":
+            return self._footer(spec, ctx, x, y, w)
         c = spec.content
         items = c["items"]
         pad = 0.03 * ctx.canvas.width * ctx.scale
@@ -162,9 +274,11 @@ class InfoBar(Component):
                                   z=2, fill=ctx.color(text_color), opacity=0.6))
             return els, total
         cur = y + pad
+        safe = ctx.canvas.safe_box
+        tx, tw = (safe.x, safe.w) if x <= 0.5 else (x + pad, w - 2 * pad)  # a band on a canvas edge: text on the poster margin
         for i, it in enumerate(items):
-            el, h = ctx.text(f"{spec.id}.item{i}", "heading", it, x + pad, cur, w - 2 * pad, color=text_color, align="center",
-                             max_lines=1, factor=0.85, source=spec.id)
+            el, h = ctx.text(f"{spec.id}.item{i}", "heading", it, tx, cur, tw, color=text_color, align=ctx.align,
+                             max_lines=2, factor=0.85 if len(items) <= 2 else 0.68, source=spec.id)  # a long line (an address) may wrap
             els.append(el)
             cur += h
         total = cur - y + pad
@@ -175,12 +289,14 @@ class InfoBar(Component):
         return spec.anchor != "flow"
 
 
-def _circle_photo(ctx: Ctx, id_: str, asset: str | None, cx: float, y: float, d: float, ring: bool = True) -> list[PlacedElement]:
+def _circle_photo(ctx: Ctx, id_: str, asset: str | None, cx: float, y: float, d: float, ring: bool = True,
+                  framing: str | None = None) -> list[PlacedElement]:
     if not asset or asset not in ctx.assets:
         ctx.issue(IssueCategory.photo_treatment, f"{id_}: missing photo asset {asset!r}", [id_], "supply the photo")
         return []
     box = Box(x=cx - d / 2, y=y, w=d, h=d)
-    els = [_image(id_, "headshot", box, asset, crop="circle", focus=(0.5, 0.3))]
+    props = {"framing": framing} if framing else {}  # head / head_and_shoulders / half_body: the pipeline reframes a copy of the photo
+    els = [_image(id_, "headshot", box, asset, crop="circle", focus=(0.5, 0.3), **props)]
     if ring:
         els.append(_shape(f"{id_}.ring", "headshot_ring", box, z=11, shape="ellipse", fill=None,
                           stroke=ctx.color("primary"), stroke_width=max(2.0, d * 0.02)))
@@ -193,19 +309,23 @@ class ChiefGuestCard(Component):
 
     def build(self, spec, ctx, x, y, w):
         c, els, cur = spec.content, [], y
+        align = c.get("align", ctx.align)
         if c.get("label"):
-            el, h = ctx.text(f"{spec.id}.label", "label", c["label"], x, cur, w, color="muted", align="center", upper=True,
-                             max_lines=1, source=spec.id)
+            el, h = ctx.text(f"{spec.id}.label", "label", c["label"], x, cur, w, color=c.get("label_color", "accent"), align=align, upper=True,
+                             tracking=140, max_lines=1, source=spec.id)
             els.append(el)
             cur += h + _gap(ctx, 0.4)
-        d = c.get("photo_d_pct", 19.0) / 100.0 * ctx.canvas.width * ctx.scale
-        els += _circle_photo(ctx, f"{spec.id}.photo", c.get("photo"), x + w / 2, cur, d)
-        cur += d + _gap(ctx, 1.0)
-        el, h = ctx.text(f"{spec.id}.name", "heading", c["name"], x, cur, w, color="text", align="center", max_lines=2, source=spec.id)
+        if c.get("photo"):  # the photo is optional: a card without one is label + name + designation
+            d = c.get("photo_d_pct", 19.0) / 100.0 * ctx.canvas.width * ctx.scale
+            cx = {"left": x + d / 2, "center": x + w / 2, "right": x + w - d / 2}[align]
+            els += _circle_photo(ctx, f"{spec.id}.photo", c.get("photo"), cx, cur, d, framing=c.get("framing", "face"))
+            cur += d + _gap(ctx, 1.0)
+        el, h = ctx.text(f"{spec.id}.name", "heading", c["name"], x, cur, w, color=c.get("name_color", "primary"), align=align, max_lines=2,
+                         factor=1.25, source=spec.id)  # the name is the largest, boldest line of the card
         els.append(el)
-        cur += h + _gap(ctx, 0.2)
+        cur += h + _gap(ctx, 0.3)
         for i, ln in enumerate(c.get("lines", [])):
-            el, h = ctx.text(f"{spec.id}.line{i}", "caption", ln, x, cur, w, color="muted", align="center", max_lines=2,
+            el, h = ctx.text(f"{spec.id}.line{i}", "caption", ln, x, cur, w, color=c.get("lines_color", "text"), align=align, max_lines=2,
                              source=spec.id)
             els.append(el)
             cur += h
@@ -232,7 +352,7 @@ class SpeakerGrid(Component):
             for i, sp in enumerate(row):
                 sid = f"{spec.id}.s{r + i}"
                 cx = x0 + (i + 0.5) * col_w
-                els += _circle_photo(ctx, f"{sid}.photo", sp.get("asset"), cx, cur, d, ring=False)
+                els += _circle_photo(ctx, f"{sid}.photo", sp.get("asset"), cx, cur, d, ring=False, framing=c.get("framing", "face"))
                 ty = cur + d + _gap(ctx, 0.5)
                 nm, nh = ctx.text(f"{sid}.name", "micro", sp["name"], x0 + i * col_w, ty, col_w * 0.96, color="primary",
                                   align="center", font_role="display", max_lines=2, source=spec.id)
@@ -392,7 +512,10 @@ class HeroImage(Component):
         wmax = c.get("max_width_pct", 100.0) / 100.0 * w
         if bw > wmax:
             bw, h = wmax, wmax / aspect
-        if c.get("frame", True) is False:
+        frame = c.get("frame")
+        if frame is None:  # a generated cutout has no background to put in a card; a photo does
+            frame = ctx.assets[aid].kind != AssetKind.generated_hero
+        if frame is False:
             bx = {"left": x, "center": x + (w - bw) / 2, "right": x + w - bw}[c.get("align", ctx.align)]
             return [_image(f"{spec.id}.img", "hero", Box(x=bx, y=y, w=bw, h=h), aid, z=8)], h
         return self._framed(spec, ctx, aid, x, y, w, bw, h, aspect)

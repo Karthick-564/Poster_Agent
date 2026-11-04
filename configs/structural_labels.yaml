@@ -12,6 +12,21 @@ labels:
   - Supported By
   - Presented By
   - Powered By
+  - Date
+  - Time
+  - Venue
+  - Fee
+  - Cost
+  - Mode
+  - Duration
+  - Eligibility
+  - Contact
+  - Register
+  - Registration
+  - Deadline
+  - Last Date
+  - Prizes
+  - Timing
 patterns:
   - '^day \d+ speakers$'
   - '^day \d+$'

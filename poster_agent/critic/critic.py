@@ -68,6 +68,8 @@ class CriticReport:
     issues: list[Issue] = field(default_factory=list)
     dropped: list[str] = field(default_factory=list)  # reply parts we could not use (unknown category / id)
     note: str = ""
+    method: str = "review"  # 'review' (open-ended, large model) | 'glance' (thumbnail reading test, small local model)
+    probes: list[dict] = field(default_factory=list)  # glance-test readings, when method == 'glance'
 
     @property
     def passed(self) -> bool:
@@ -77,7 +79,7 @@ class CriticReport:
     def to_dict(self) -> dict:
         return {"available": self.available, "score": self.score, "summary": self.summary, "strengths": self.strengths,
                 "issues": [i.model_dump(mode="json") for i in self.issues], "dropped": self.dropped, "note": self.note,
-                "pass_score": PASS_SCORE}
+                "pass_score": PASS_SCORE, "method": self.method, "probes": self.probes}
 
 
 def downscale(png: Path, out: Path, max_side: int = MAX_SIDE) -> Path:
@@ -101,8 +103,34 @@ def element_summary(spec: PosterSpec) -> list[dict]:
     return out
 
 
+def glance_critique(png: Path, brief: Brief, vlm, work_dir: Path) -> CriticReport:
+    """Critique by the glance test: a small local VLM must read the title (and date) from a 300 px thumbnail. Deterministic verdicts;
+    the 'score' is only the share of readings that matched the brief, scaled to 10 (and labelled as such in the summary)."""
+    from .probes import THUMB_SIDE, glance_test
+    results = glance_test(vlm, png, brief.event_title, brief.date, work_dir)
+    answered = [r for r in results if r.passed is not None]
+    if not answered:
+        return CriticReport(available=False, method="glance", note="the local VLM gave no usable reading of the thumbnail")
+    issues: list[Issue] = []
+    for r in answered:
+        if r.passed:
+            continue
+        what = "event title" if r.id == "title" else "date"
+        issues.append(Issue(
+            category=IssueCategory.hierarchy, severity="error" if r.id == "title" else "warning", element_ids=[], source="critic",
+            evidence=f"glance test: from a {THUMB_SIDE}px thumbnail the vision model read the {what} as {r.read!r}, expected {r.expected!r}",
+            suggested_fix=f"make the {what} larger / higher contrast so it reads at thumbnail size"))
+    ok = sum(1 for r in answered if r.passed)
+    return CriticReport(available=True, method="glance", score=max(1, round(10 * ok / len(answered))),
+                        summary=f"glance test ({vlm.name}): {ok} of {len(answered)} thumbnail readings matched the brief",
+                        strengths=[f"read the {r.id} correctly at thumbnail size" for r in answered if r.passed], issues=issues,
+                        probes=[r.to_dict() for r in results])
+
+
 def critique(png: Path, spec: PosterSpec, brand: BrandProfile, brief: Brief, checks: CheckReport | None, vlm: LLM,
              work_dir: Path) -> CriticReport:
+    if getattr(vlm, "probe_critic", False):  # small local model: closed, checkable questions only
+        return glance_critique(png, brief, vlm, work_dir)
     small = downscale(png, work_dir / "critic_input.png")
     ids = {e.id for e in spec.placed} | {"background"}
     check_lines = [f"[{'PASS' if r.passed else 'FAIL'}] {r.name}: {r.detail}" for r in (checks.results if checks else [])]

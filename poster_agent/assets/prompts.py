@@ -253,6 +253,7 @@ def flux_prompt(art: ArtDirection, calm: CalmLayout | str) -> str:
     colors = color_words(art.palette)
     if colors:
         parts.append(f"The colour palette is {colors}.")
+    parts.append("The whole image is a soft, muted backdrop with gentle gradients and low contrast, quiet enough for text to sit on it.")
     if calm.text:
         parts.append(calm.text.rstrip(".") + ".")
     focus = focus_phrase(calm.busy_ranges)

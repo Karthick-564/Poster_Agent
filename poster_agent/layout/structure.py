@@ -5,8 +5,10 @@ from __future__ import annotations
 from poster_agent.spec import AssetKind, AssetRef, Box, ElementKind, IssueCategory, PlacedElement
 from poster_agent.spec.brand import ROOT
 
-from .base import Component, register
+from .base import REGISTRY, Component, register
 from .components import _aspect, _gap, _image, _shape
+from .icons import choose_icon
+from .qr import qr_svg
 
 
 def _treat(c: dict) -> dict:
@@ -29,17 +31,20 @@ class BigTitle(Component):
         c = spec.content
         lines = c.get("lines") or str(c["title"]).split("\n")
         colors = c.get("colors") or []
-        font_role = c.get("font_role", "display_heavy")
+        font_role = c.get("font_role", ctx.style_font("display", "display_heavy"))
         font = ctx.font(font_role)
         cap = c.get("cap_pct", 13.0) / 100.0 * ctx.canvas.height * ctx.scale
         els: list[PlacedElement] = []
         cur = y
+        roles = c.get("font_roles") or []  # optional per-line weights, e.g. ["light", "display_heavy"]
         for i, line in enumerate(lines):
-            w100 = max(ctx.measurer.width(line, font.family, font.style, 100.0), 1.0)
+            line_role = roles[i] if i < len(roles) else font_role
+            lf = ctx.font(line_role)
+            w100 = max(ctx.measurer.width(line, lf.family, lf.style, 100.0), 1.0)
             size = min(100.0 * 0.96 * w / w100, cap)
             el, h = ctx.text(f"{spec.id}.l{i}", "display", line, x, cur, w, size=size,
                              color=colors[i] if i < len(colors) else c.get("color", "primary"), align=c.get("align", ctx.align),
-                             font_role=font_role, max_lines=1, source=spec.id)
+                             font_role=line_role, max_lines=1, source=spec.id)
             els.append(el)
             cur += h
         total = cur - y + 0.08 * (els[-1].size or 0) if els else 0.0
@@ -137,10 +142,12 @@ class PhotoFade(Component):
     """A supplied photo bleeding off the bottom (or top) edge, full width, dissolving into the page colour through a vector
     gradient: the photo itself is untouched. Use anchor 'bottom' (or 'top' to fade at the photo's bottom edge)."""
     name = "PhotoFade"
+    band_elastic = True  # as a bottom anchor it grows up to the content (max_pct caps it)
 
     def build(self, spec, ctx, x, y, w):
         c = spec.content
-        h = c.get("height_pct", 38.0) / 100.0 * ctx.canvas.height
+        h = min(c.get("height_pct", 38.0) / 100.0 * ctx.canvas.height * ctx.scale ** 1.5 + ctx.extra.get(spec.id, 0.0),
+                c.get("max_pct", 60.0) / 100.0 * ctx.canvas.height)
         fade = h * c.get("fade_pct", 45.0) / 100.0
         col = ctx.color(c["fade_color"]) if c.get("fade_color") else (ctx.ground or ctx.color("surface"))
         at_top = spec.anchor != "top"  # a photo at the bottom fades at its top edge; a top photo fades at its bottom edge
@@ -176,18 +183,25 @@ class IconRow(Component):
         col = ctx.color(c.get("icon_color", "primary"))
         els: list[PlacedElement] = []
         label_h = 0.0
+        available = set(icon_names())
         for i, it in enumerate(items):
-            aid = f"icon_{it['icon']}"
+            icon = choose_icon(it["label"], it.get("icon"), available)  # by meaning: the label decides, the planner's pick is a hint
+            aid = f"icon_{icon}"
             if aid not in ctx.assets:
-                path = (ICON_DIR / f"{it['icon']}.svg")
+                path = (ICON_DIR / f"{icon}.svg")
                 if not path.exists():
-                    ctx.issue(IssueCategory.photo_treatment, f"{spec.id}: unknown icon {it['icon']!r}", [spec.id], "pick an icon from the list")
+                    ctx.issue(IssueCategory.photo_treatment, f"{spec.id}: unknown icon {icon!r}", [spec.id], "pick an icon from the list")
                     continue
                 ctx.assets[aid] = AssetRef(id=aid, kind=AssetKind.icon, path=path.relative_to(ROOT).as_posix(), provenance="brand")
-            cx = x + (i + 0.5) * cw
-            els.append(_image(f"{spec.id}.i{i}", "icon", Box(x=cx - isz / 2, y=y, w=isz, h=isz), aid, z=8, recolor=col))
-            lbl, lh = ctx.text(f"{spec.id}.l{i}", "caption", it["label"], x + i * cw + 0.06 * cw, y + isz + _gap(ctx, 0.5),
-                               cw * 0.88, color=c.get("label_color", "text"), align="center", font_role="display", max_lines=3,
+            cell = x + i * cw
+            if ctx.align == "left":  # left poster: icon and label share the cell's left edge (the first cell is on the margin)
+                inset = 0.0 if i == 0 else 0.07 * cw
+                ix, lx, lw, lalign = cell + inset, cell + inset, cw - inset - 0.04 * cw, "left"
+            else:
+                ix, lx, lw, lalign = cell + (cw - isz) / 2, cell + 0.06 * cw, cw * 0.88, "center"
+            els.append(_image(f"{spec.id}.i{i}", "icon", Box(x=ix, y=y, w=isz, h=isz), aid, z=8, recolor=col))
+            lbl, lh = ctx.text(f"{spec.id}.l{i}", "caption", it["label"], lx, y + isz + _gap(ctx, 0.5),
+                               lw, color=c.get("label_color", "text"), align=lalign, font_role="display", max_lines=3,
                                source=spec.id, upper=True)
             els.append(lbl)
             label_h = max(label_h, lh)
@@ -228,4 +242,62 @@ class BigWord(Component):
         return els + [cap], wh + ch
 
 
-__all__ = ["BigTitle", "TabBanner", "ImageBlock", "Columns", "PhotoFade", "IconRow", "BigWord", "ElementKind"]
+@register
+class HeaderRow(Component):
+    """The institution logo on one side and a few right/left-aligned lines (date, time, venue ...) on the other, vertically centred:
+    a flexible alternative to the centred logo-then-title stack. content: side (logo side, default 'left'), lines (verbatim text),
+    logo, logo_pct (default 18), color, role."""
+    name = "HeaderRow"
+
+    def build(self, spec, ctx, x, y, w):
+        from poster_agent.spec import ComponentSpec
+        c = spec.content
+        side = c.get("side", "left")
+        logo_spec = ComponentSpec(id=f"{spec.id}.lg", component="LogoBlock", content={"logo": c.get("logo"), "width_pct": c.get("logo_pct", 18.0),
+                                                                                  "align": side, "force_align": True})
+        els, lh = REGISTRY["LogoBlock"].build(logo_spec, ctx, x, y, w)
+        logo = next(e for e in els if e.role == "logo")
+        lines = [t for t in c.get("lines", []) if t]
+        if not lines:
+            return els, lh
+        gap = 0.04 * w
+        tw = w - (logo.box.w + 2 * (logo.box.x - x if side == "left" else x + w - logo.box.right) if False else logo.box.w) - gap
+        tx = (logo.box.right + gap) if side == "left" else x
+        order = ["micro", "caption", "label", "body", "subtitle", "heading", "title", "display"]
+        role = c.get("role", "subtitle")
+        if role not in order or order.index(role) > order.index("subtitle"):
+            role = "subtitle"  # these lines are supporting information; the title is the biggest text on the poster
+        txt, th = ctx.text(f"{spec.id}.lines", role, "\n".join(lines), tx, y, max(tw, 0.3 * w),
+                           color=c.get("color", "text"), align="right" if side == "left" else "left", font_role=c.get("font_role", "display"),
+                           max_lines=len(lines) + 2, source=spec.id)
+        top = y + max((lh - th) / 2, 0.0)
+        txt = txt.model_copy(update={"box": txt.box.model_copy(update={"y": top})})
+        return els + [txt], max(lh, th)
+
+
+__all__ = ["BigTitle", "TabBanner", "ImageBlock", "Columns", "PhotoFade", "IconRow", "BigWord", "HeaderRow", "ElementKind"]
+
+
+@register
+class QRBlock(Component):
+    """A QR code (vector, generated from `url`, which must be text from the brief) with an optional caption under it (`caption`, verbatim
+    from the brief, e.g. 'Scan to register'). Never an AI image."""
+    name = "QRBlock"
+    variants = ("default",)
+
+    def build(self, spec, ctx, x, y, w):
+        c = spec.content
+        size = min(c.get("size_pct", 20.0) / 100.0 * ctx.canvas.width * ctx.scale ** 0.5, w)
+        path = qr_svg(c["url"], dark=ctx.color(c.get("color", "primary")))
+        aid = f"qr_{path.stem}"
+        ctx.assets[aid] = AssetRef(id=aid, kind=AssetKind.icon, path=path.relative_to(ROOT).as_posix(), provenance="generated")
+        align = c.get("align", ctx.align)
+        bx = {"left": x, "center": x + (w - size) / 2, "right": x + w - size}[align]
+        els = [PlacedElement(id=f"{spec.id}.qr", kind=ElementKind.qr, role="qr", box=Box(x=bx, y=y, w=size, h=size), z=8, asset_id=aid)]
+        h = size
+        if c.get("caption"):
+            cap, ch = ctx.text(f"{spec.id}.caption", "caption", c["caption"], x, y + size + 0.012 * ctx.canvas.height, w,
+                               color=c.get("caption_color", "text"), align=align, source=spec.id, max_lines=2)
+            els.append(cap)
+            h += 0.012 * ctx.canvas.height + ch
+        return els, h

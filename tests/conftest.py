@@ -27,6 +27,6 @@ def pytest_collection_modifyitems(items):
 
 # The public repository ships no institution brand data (logos / brand profiles / real-poster fixtures). Without a brand in
 # brands/<key>/, only the brand-independent tests are collected; add your own brand to run the full suite.
-_BRAND_FREE = {"test_guardrails.py", "test_outputs.py"}
-collect_ignore = [] if any((ROOT / "brands").glob("*/brand.yaml")) else sorted(
+_BRAND_FREE = {"test_example_brand.py", "test_webapp.py", "test_person.py", "test_cli_llm.py", "test_prompt_brief.py", "test_guardrails.py", "test_outputs.py", "test_skills.py", "test_local_vlm.py", "test_local_vlm_live.py"}
+collect_ignore = [] if any(p for p in (ROOT / "brands").glob("*/brand.yaml") if not p.parent.name.startswith("_")) else sorted(
     p.name for p in (ROOT / "tests").glob("test_*.py") if p.name not in _BRAND_FREE)

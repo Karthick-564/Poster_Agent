@@ -14,7 +14,7 @@ from poster_agent.spec import AssetKind, Box, ElementKind, Issue, IssueCategory,
 from poster_agent.spec.brand import BrandProfile
 from poster_agent.spec.formats import MM_TO_PT
 
-from . import emptiness, ocr, pixels
+from . import aesthetics, emptiness, ocr, pixels
 
 LARGE_TEXT_PT = 24.0  # WCAG "large text" relaxation (3:1)
 LARGE_TEXT_RATIO = 3.0
@@ -68,7 +68,7 @@ def _issue(cat: IssueCategory, evidence: str, ids: list[str] | None = None, fix:
 
 
 def run_checks(spec: PosterSpec, brand: BrandProfile, compiled: CompileResult, *, root: Path = ROOT,
-               use_ocr: bool = True, use_emptiness: bool = True) -> CheckReport:
+               use_ocr: bool = True, use_emptiness: bool = True, use_aesthetics: bool = True) -> CheckReport:
     rep = CheckReport()
     canvas = spec.canvas
     scale = canvas.export_scale
@@ -176,6 +176,10 @@ def run_checks(spec: PosterSpec, brand: BrandProfile, compiled: CompileResult, *
     if over:
         rep.issues.append(_issue(IssueCategory.dead_space, "dead space: " + "; ".join(over), [],
                                  "add brand decoration over the empty regions, enlarge the hero/type, or add a visual element"))
+    if use_aesthetics:  # hierarchy and proportion, measured on the placed poster (title dominance, logo size, repeated text)
+        for name, ok, detail, measured, found in aesthetics.measure(spec):
+            rep.results.append(CheckResult(name, ok, detail, measured))
+            rep.issues += found
 
     # ---- 6. logos ---------------------------------------------------------------------------------------------------
     _logo_checks(spec, brand, compiled, img, scale, rep, root, by_id)
@@ -185,6 +189,26 @@ def run_checks(spec: PosterSpec, brand: BrandProfile, compiled: CompileResult, *
 def _ocr_checks(spec, compiled, img, scale, texts, rep: CheckReport) -> None:
     per: dict[str, str] = {}
     unverifiable, weak, failed = [], 0, 0
+
+    def read_line_alone(el, idx: int, nlines: int) -> str:
+        """OCR of line `idx` of a multi-line text element, cropped out on its own: OCR often drops a line of a multi-line crop,
+        especially over textured art, but reads the same line fine when it is the only one in the crop."""
+        bx = _bounds(el, compiled)
+        lead = float(el.props.get("leading") or (el.size or 12) * 1.2)
+        row = Box(x=bx.x, y=bx.y + idx * lead - 0.05 * lead, w=bx.w, h=1.1 * lead)
+        return ocr.read_crop(img, pixels.pixel_box(row, scale, img.size, pad=3))
+
+    def element_score(el, got: str) -> float:
+        """The worst line of the block decides; a line the block read dropped is retried alone before it counts as missing."""
+        lines = [(i, ln) for i, ln in enumerate((el.text or "").split("\n")) if ocr.alnum(ln)]
+        scores = []
+        for i, ln in lines:
+            sc = ocr.match_score(ln, got)
+            if sc < OCR_MANDATORY_MIN and len(lines) > 1:
+                sc = max(sc, ocr.match_score(ln, read_line_alone(el, i, len(lines))))
+            scores.append(sc)
+        return min(scores, default=100.0)
+
     for el in texts:
         if not ocr.verifiable(el.text or ""):
             unverifiable.append(el.id)
@@ -192,7 +216,7 @@ def _ocr_checks(spec, compiled, img, scale, texts, rep: CheckReport) -> None:
         b = _bounds(el, compiled)
         got = ocr.read_crop(img, pixels.pixel_box(b, scale, img.size, pad=3))
         per[el.id] = got
-        score = ocr.match_score(el.text, got)
+        score = element_score(el, got)
         if score < OCR_ELEMENT_FAIL:
             failed += 1
             rep.issues.append(_issue(IssueCategory.mandatory_missing,
@@ -209,17 +233,29 @@ def _ocr_checks(spec, compiled, img, scale, texts, rep: CheckReport) -> None:
 
     corpus = " ".join(per[e.id] for e in sorted((t for t in texts if t.id in per), key=lambda t: (_bounds(t, compiled).y, _bounds(t, compiled).x)))
     miss, checked = [], 0
+
+    def reread_line(text: str) -> float:
+        """Best score for a mandatory `text` when the line carrying it is cropped out of its block and read alone."""
+        best = 0.0
+        for el in texts:
+            lines = (el.text or "").split("\n")
+            hit = [i for i, ln in enumerate(lines) if ocr.alnum(ln) and ocr.match_score(text, ln) >= OCR_MANDATORY_MIN]
+            if hit and len(lines) >= 2:
+                best = max(best, ocr.match_score(text, read_line_alone(el, hit[0], len(lines))))
+        return best
     for m in spec.mandatory:
         if m.kind != "text" or not m.text:
             continue
         if not ocr.verifiable(m.text):
             continue
         checked += 1
-        s = ocr.match_score(m.text, corpus)
-        if s < OCR_MANDATORY_MIN:
+        sc = ocr.match_score(m.text, corpus)
+        if sc < OCR_MANDATORY_MIN:
+            sc = max(sc, reread_line(m.text))  # the block read may simply have dropped this line
+        if sc < OCR_MANDATORY_MIN:
             miss.append(m.id)
             rep.issues.append(_issue(IssueCategory.mandatory_missing,
-                                     f"mandatory {m.label}: {m.text!r} not found in the rendered poster (best match {s:.0f}/100)",
+                                     f"mandatory {m.label}: {m.text!r} not found in the rendered poster (best match {sc:.0f}/100)",
                                      fix="the text is missing or illegible"))
     rep.results.append(CheckResult("mandatory_text", not miss, f"{checked} mandatory text items checked against the render, "
                                    f"{len(miss)} missing", {"missing": miss}))
@@ -288,7 +324,7 @@ def _logo_checks(spec, brand, compiled, img, scale, rep: CheckReport, root: Path
                 problems.append(f"logo is {pct:.1f}% of the canvas width, below the {var.min_width_pct:g}% minimum")
             if abs((b.w / b.h) / var.aspect - 1) > 0.02:
                 problems.append(f"logo aspect ratio {b.w / b.h:.2f} differs from the artwork's {var.aspect:.2f}")
-            if not brand.logo_rules.allow_gradient_behind or var.field != "any":
+            if not var.solid_field and (not brand.logo_rules.allow_gradient_behind or var.field != "any"):
                 strips = pixels.ring_strips(b, clear * 0.8, canvas.width, canvas.height)
                 solid = pixels.field_solidity(img, strips, scale)
                 if solid["max_std"] > SOLID_STD_MAX or solid["mean_spread"] > SOLID_SPREAD_MAX:

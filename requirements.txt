@@ -1,0 +1,29 @@
+# Poster Agent: runtime dependencies (versions this project is tested with, Python 3.12).
+# Install:  python -m venv .venv  &&  .venv\Scripts\python -m pip install -r requirements.txt
+
+# MCP: the client for VectorCraft's native server, and the small helper-tools server (needs mcp 2.x: MCPServer)
+mcp>=2.3,<3
+
+# data model, config, HTTP
+pydantic>=2.14,<3
+PyYAML>=6.0
+python-dotenv>=1.0
+httpx>=0.28
+
+# images and checks
+pillow>=13.0
+numpy>=2.5
+opencv-python>=5.0          # QR decoding in tests, face detector (YuNet) when its model file is installed
+rapidocr-onnxruntime>=1.4   # OCR for the render checks
+RapidFuzz>=3.14             # fuzzy text matching for OCR checks
+onnxruntime>=1.31           # runs the OCR and background-removal models
+rembg>=2.0.86               # local background removal (cutouts, person matte)
+
+# QR codes (vector SVG)
+segno>=1.6
+
+# optional: scripts/ that read brand-guideline PDFs
+pymupdf>=2.1
+
+# tests
+pytest>=9.0

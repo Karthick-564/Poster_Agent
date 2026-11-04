@@ -40,6 +40,18 @@ class FontBook:
         return ImageFont.truetype(str(self.path(family, style)), _REF_PX)
 
 
+def _glue_numbers(words: list[str]) -> list[str]:
+    """Consecutive digit groups (a phone number: '+91 81220 91077') are one unbreakable word."""
+    import re
+    out: list[str] = []
+    for w in words:
+        if out and re.fullmatch(r"\+?\d+", w) and re.fullmatch(r"[+\d ]+", out[-1]):
+            out[-1] = f"{out[-1]} {w}"
+        else:
+            out.append(w)
+    return out
+
+
 class TextMeasurer:
     def __init__(self, book: FontBook | None = None):
         self.book = book or FontBook()
@@ -55,7 +67,7 @@ class TextMeasurer:
         """Greedy word wrap. Existing newlines are kept; a single word wider than max_w gets its own line."""
         lines: list[str] = []
         for para in text.split("\n"):
-            words = para.split()
+            words = _glue_numbers(para.split())
             if not words:
                 lines.append("")
                 continue
@@ -69,6 +81,45 @@ class TextMeasurer:
                     cur = word
             lines.append(cur)
         return lines
+
+    def wrap_balanced(self, text: str, family: str, style: str, size: float, max_w: float, tracking: float = 0.0) -> list[str]:
+        """Same line count as the greedy wrap, but the breaks are chosen so the lines are as even as possible (no long line over a
+        one-word stub, no orphan on the last line). Headlines and subtitles read better balanced. Falls back to the greedy lines when
+        they cannot be improved, and never produces a line wider than max_w."""
+        greedy = self.wrap(text, family, style, size, max_w, tracking)
+        if len(greedy) < 2 or any("\n" in p for p in [text]) and len(text.split("\n")) > 1:
+            return greedy
+        words = _glue_numbers(text.split())
+        n, k = len(words), len(greedy)
+        if n < k + 1 or n > 40:
+            return greedy
+        width = lambda i, j: self.width(" ".join(words[i:j]), family, style, size, tracking)
+        total = self.width(" ".join(words), family, style, size, tracking)
+        target = total / k
+        inf = float("inf")
+        cost = [[inf] * (n + 1) for _ in range(k + 1)]
+        back = [[0] * (n + 1) for _ in range(k + 1)]
+        cost[0][0] = 0.0
+        for line in range(1, k + 1):
+            for j in range(line, n + 1):
+                for i in range(line - 1, j):
+                    if cost[line - 1][i] == inf:
+                        continue
+                    w = width(i, j)
+                    if w > max_w:
+                        continue
+                    c = cost[line - 1][i] + (target - w) ** 2 * (1.5 if line == k else 1.0)  # the last line matters most (no stub)
+                    if c < cost[line][j]:
+                        cost[line][j], back[line][j] = c, i
+        if cost[k][n] == inf:
+            return greedy
+        out, j = [], n
+        for line in range(k, 0, -1):
+            i = back[line][j]
+            out.append(" ".join(words[i:j]))
+            j = i
+        out.reverse()
+        return out
 
     def widest(self, lines: list[str], family: str, style: str, size: float, tracking: float = 0.0) -> float:
         return max((self.width(ln, family, style, size, tracking) for ln in lines), default=0.0)

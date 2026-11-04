@@ -12,7 +12,11 @@ from poster_agent.spec.brand import BrandProfile, FontRole
 
 from .fonts import TextMeasurer
 
+BALANCED_ROLES = {"display", "title", "heading", "subtitle"}  # roles whose line breaks are balanced (headlines, not body copy)
 WRAP_SAFETY = 0.97  # measurer vs VectorCraft differ by up to ~1.4%; wrap with margin to stay clear of it
+
+SECONDARY_UP_MAX = 1.12  # supporting text may grow at most this much when the solver fills spare space
+ROLE_MAX_FRACTION = {"heading": 0.042, "subtitle": 0.036, "body": 0.030, "caption": 0.024, "label": 0.022, "micro": 0.019}
 
 # role -> (font role, size as fraction of canvas width, leading ratio, tracking 1/1000 em)
 TYPE_SCALE: dict[str, tuple[str, float, float, float]] = {
@@ -27,6 +31,23 @@ TYPE_SCALE: dict[str, tuple[str, float, float, float]] = {
 }
 
 
+# Typography presets: per type role, override the font role, case, tracking and a size factor. A component that sets its own
+# font/tracking/case still wins. Roles a brand does not define fall back to its display/body fonts.
+TYPE_STYLES: dict[str, dict[str, dict]] = {
+    "classic": {},
+    "bold": {"display": {"font": "display_heavy", "upper": True}, "title": {"font": "display_heavy", "upper": True},
+             "heading": {"font": "display", "upper": True}, "label": {"font": "display", "tracking": 200, "upper": True}},
+    "elegant": {"display": {"font": "light", "upper": True, "tracking": 120}, "title": {"font": "light", "upper": True, "tracking": 160},
+                "heading": {"font": "light", "upper": True, "tracking": 120}, "subtitle": {"font": "light"},
+                "label": {"font": "display", "tracking": 300, "upper": True}},
+    "editorial": {"label": {"font": "display", "tracking": 300, "upper": True}, "subtitle": {"font": "light", "factor": 1.1},
+                  "body": {"font": "light", "factor": 1.05}, "title": {"font": "display"}},
+    "condensed": {"display": {"font": "condensed", "upper": True, "factor": 1.25}, "title": {"font": "condensed", "upper": True, "factor": 1.2},
+                  "heading": {"font": "condensed", "upper": True, "factor": 1.15}, "subtitle": {"font": "condensed_regular", "factor": 1.1},
+                  "label": {"font": "condensed", "tracking": 200, "upper": True}},
+}
+
+
 @dataclass
 class Ctx:
     brand: BrandProfile
@@ -34,6 +55,7 @@ class Ctx:
     measurer: TextMeasurer
     assets: dict[str, AssetRef]
     scale: float = 1.0  # global shrink applied by the solver when content does not fit
+    type_style: str = "classic"  # typography preset (TYPE_STYLES)
     align: str = "center"  # the poster's composition: 'center' (symmetric) or 'left' (editorial, left-aligned stacks)
     ground: str | None = None  # the poster's real background colour (darkest gradient stop); derived colours are made readable on it
     extra: dict[str, float] = field(default_factory=dict)  # component id -> spare height (pt) an elastic component may grow by
@@ -53,7 +75,13 @@ class Ctx:
 
     def size(self, role: str, factor: float = 1.0) -> float:
         _, frac, _, _ = TYPE_SCALE[role]
-        return max(self.floor(role), frac * self.canvas.width * factor * self.scale)
+        # When the solver scales UP to fill space, only the title-class roles take the full growth; supporting text grows a little at most
+        up = self.scale if (role in ("display", "title") or self.scale <= 1.0) else min(self.scale, SECONDARY_UP_MAX)
+        size = frac * self.canvas.width * factor * up
+        cap = ROLE_MAX_FRACTION.get(role)  # supporting roles never get bigger than this share of the poster width
+        if cap is not None:
+            size = min(size, cap * self.canvas.width * max(factor, 1.0))
+        return max(self.floor(role), size)
 
     # ---- assets ---------------------------------------------------------
     def brand_logo_asset(self, name: str | None = None) -> str:
@@ -75,16 +103,24 @@ class Ctx:
              max_lines: int | None = None, upper: bool = False) -> tuple[PlacedElement, float]:
         """One wrapped text element. Returns (element, height). Shrinks to `max_lines` (never below the floor)."""
         frole, _, lead_ratio, trk = TYPE_SCALE[role]
-        font = self.ctx_font(font_role or frole)
-        trk = trk if tracking is None else tracking
+        st = TYPE_STYLES.get(self.type_style, {}).get(role, {})
+        font = self.ctx_font(font_role or st.get("font", frole))
+        trk = (st.get("tracking", trk)) if tracking is None else tracking
+        upper = upper or bool(st.get("upper"))
+        factor = factor * st.get("factor", 1.0) if size is None else factor
         text = text.upper() if upper else text
         size = size or self.size(role, factor)
         floor = self.floor(role)
-        lines = self.measurer.wrap(text, font.family, font.style, size, w * WRAP_SAFETY, trk)
+        wrap = self.measurer.wrap_balanced if role in BALANCED_ROLES else self.measurer.wrap  # headlines break into even lines
+        lines = wrap(text, font.family, font.style, size, w * WRAP_SAFETY, trk)
         while max_lines and len(lines) > max_lines and size > floor:
             size = max(floor, size * 0.94)
-            lines = self.measurer.wrap(text, font.family, font.style, size, w * WRAP_SAFETY, trk)
+            lines = wrap(text, font.family, font.style, size, w * WRAP_SAFETY, trk)
         widest = self.measurer.widest(lines, font.family, font.style, size, trk)
+        while widest > w * WRAP_SAFETY and size > floor:  # one word wider than its box (a long label in a narrow cell): shrink, don't fail
+            size = max(floor, size * 0.94)
+            lines = wrap(text, font.family, font.style, size, w * WRAP_SAFETY, trk)
+            widest = self.measurer.widest(lines, font.family, font.style, size, trk)
         if widest > w:
             self.issue(IssueCategory.fit, f"{id_}: longest line {widest:.0f}pt exceeds width {w:.0f}pt at {size:.0f}pt",
                        [id_], "shorten the text or give the component more width")
@@ -103,6 +139,10 @@ class Ctx:
 
     def ctx_font(self, role: str) -> FontRole:
         return self.font(role)
+
+    def style_font(self, role: str, default: str) -> str:
+        """The font role the typography preset gives a type role (for components that pick fonts themselves, like BigTitle)."""
+        return TYPE_STYLES.get(self.type_style, {}).get(role, {}).get("font", default)
 
 
 def resolve_color(brand: BrandProfile, name: str, ground: str | None = None) -> str:

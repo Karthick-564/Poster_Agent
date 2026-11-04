@@ -14,15 +14,20 @@ import shutil
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
+from poster_agent.analysis import analyse
 from poster_agent.assets import ArtDirection, AssetGenerator, ComfyClient, GenInfo, calm_layout
-from poster_agent.assets.treatments import apply_treatments
+from poster_agent.assets.cutouts import apply_cutouts
+from poster_agent.assets.person import apply_framing
+from poster_agent.assets.treatments import apply_treatments, calm_background
 from poster_agent.checks import CheckReport, run_checks
 from poster_agent.compile.compiler import CompileResult, compile_spec
 from poster_agent.compile.vc_client import VectorCraftSession, WatchConfig
 from poster_agent.critic import CriticReport, critique
 from poster_agent.enrich import default_preset, hero_glow, is_dark_ground, top_up
 from poster_agent.ingest import Brief, InventoryItem
+from poster_agent.layout.adapt import adapt_to_background
 from poster_agent.layout.base import resolve_color
+from poster_agent.layout.candidates import apply_choice, choose_layout
 from poster_agent.layout.solver import apply_layout
 from poster_agent.llm import LLM
 from poster_agent.plan import PlanResult, plan_poster
@@ -30,7 +35,7 @@ from poster_agent.plan.schema import PlanGeneratedAsset, PlanOutput
 from poster_agent.repairs import repair_contrast
 from poster_agent.router import feedback_lines, has_generated_art, implicated_assets, route
 from poster_agent.spec import AssetKind, AssetRef, BackgroundSpec, Box, Issue, IssueCategory, PosterSpec
-from poster_agent.spec.brand import BrandProfile
+from poster_agent.spec.brand import ROOT, BrandProfile
 
 
 @dataclass
@@ -125,6 +130,9 @@ def _realize_background(spec: PosterSpec, plan: PlanOutput, gen: AssetGenerator 
     try:
         ref, info = gen.background("background", art, spec.canvas, calm, seed_offset=offset)
         infos.append(info)
+        note = calm_background(ROOT / ref.path, brand, art.tone)  # a backdrop, not the subject: toned down so type can sit on it
+        if note not in notes:
+            notes.append(note)
         spec.assets[ref.id] = ref
         spec.background = BackgroundSpec(kind="generated", asset_id=ref.id, color=spec.background.color)
     except Exception as e:  # honest fallback: keep the solid ground and record it
@@ -188,7 +196,18 @@ async def make_poster_async(brief: Brief, brand: BrandProfile, inventory: dict[s
         for rnd in range(max_refine + 1):
             rdir = run_dir / f"round_{rnd}"
             _realize_background(spec, plan_out, gen, brand, bg_offset, infos, result.notes)
+            result.notes += [n for n in apply_framing(spec, rdir / "assets") if n not in result.notes]  # crop people photos before treatment
+            result.notes += [n for n in apply_cutouts(spec, rdir / "assets") if n not in result.notes]  # then matte supplied cutout photos
             result.notes += [n for n in apply_treatments(spec, brand, rdir / "assets") if n not in result.notes]
+            art_map = analyse(spec, ROOT)  # look at the art first, then decide where the text goes
+            choice = choose_layout(spec, brand, art_map) if art_map is not None and spec.template == "classic" else None
+            if choice is not None:
+                apply_choice(spec, choice)
+                apply_layout(spec, brand)
+                if choice.note() not in result.notes:
+                    result.notes.append(choice.note())
+            result.notes += [f"text adapted to the background: {n}" for n in adapt_to_background(spec, brand, ROOT)
+                             if f"text adapted to the background: {n}" not in result.notes]
             compiled = await compile_spec(spec, vc, rdir, name=name, watched=watch is not None,
                                           pace=watch.pace if watch else 0.0, doc_title=f"{name} - round {rnd}")
             chk = run_checks(spec, brand, compiled, use_emptiness=check_emptiness) if checks else None

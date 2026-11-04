@@ -55,5 +55,9 @@ class PlanOutput(BaseModel):
     components: list[ComponentSpec]
     generated_assets: list[PlanGeneratedAsset] = Field(default_factory=list)
     align: Literal["center", "left"] = "center"  # composition: symmetric, or left-aligned stacks with a split layout
+    flow_valign: Literal["top", "balanced", "center", "bottom"] = "balanced"
+    template: str = "classic"  # layout template with named zones; components then carry a `zone`
+    look: str = ""  # set by the system (plan/looks.py), not by the planner
+    type_style: Literal["classic", "bold", "elegant", "editorial", "condensed"] = "classic"
     decorations: list[PlanDecoration] = Field(default_factory=list)
     rationale: str = ""  # one or two sentences on the design choice (logged, never printed)

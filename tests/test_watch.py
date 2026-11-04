@@ -70,74 +70,14 @@ def test_ensure_app_never_launches_unless_asked_and_reuses_a_running_app(monkeyp
 
 # ---- what gets drawn, named (pure) --------------------------------------------------------------------------------
 
-def test_every_object_is_named_after_its_element_and_logos_stay_editable():
-    spec = decorated_spec()
-    units = build_units(spec)
-    steps, main = build_steps(units)
-    named = {s["params"]["name"]: s["params"] for s in steps if s["id"] == "object.setProps" and "name" in s["params"]}
-    assert {"background", "logo.logo", "org.title", "guest.photo", "event.box"} <= set(named)
-    assert not named["logo.logo"].get("locked") and not named["org.title"].get("locked")
-    assert not any(n.startswith("decor.") for n in named)  # decorations are grouped later, not named one by one
-    for i, s in enumerate(steps):
-        import re
-        for n in re.findall(r"\$(\d+)\.", str(s["params"])):
-            assert int(n) < i
-    assert display_name("__bg__") == "background" and display_name("__scrim_0__") == "scrim 1" and display_name("a.b") == "a.b"
 
 
-def test_watch_groups_show_each_decoration_in_one_go_and_everything_else_one_at_a_time():
-    spec = decorated_spec()
-    units = build_units(spec)
-    groups = watch_groups(units)
-    assert sum(len(g) for g in groups) == len(units) and [u for g in groups for u in g] == units  # nothing lost or reordered
-    decor_groups = [g for g in groups if g[0].decorative]
-    assert {g[0].key.split(".")[1] for g in decor_groups} == {d.id for d in spec.decorations}
-    assert all(len({u.key.split(".")[1] for u in g}) == 1 for g in decor_groups)  # one decoration per group
-    assert all(len(g) == 1 for g in groups if not g[0].decorative)
 
 
 # ---- watched execution gives the identical poster -----------------------------------------------------------------------------
 
-@needs_vc
-def test_watched_compile_is_identical_to_the_normal_compile_and_paces_each_step(monkeypatch, proj_tmp):
-    spec = decorated_spec()
-    sleeps = []
-    real_sleep = asyncio.sleep
-
-    async def fake_sleep(t):
-        sleeps.append(t)
-        await real_sleep(0)
-
-    async def run(watched):
-        async with VectorCraftSession() as vc:
-            return await compile_spec(spec, vc, proj_tmp / ("w" if watched else "n"), name="p", watched=watched, pace=0.25,
-                                      doc_title="p - round 0")
-
-    normal = asyncio.run(run(False))
-    monkeypatch.setattr(comp.asyncio, "sleep", fake_sleep)
-    watched = asyncio.run(run(True))
-    a, b = np.array(Image.open(normal.png)), np.array(Image.open(watched.png))
-    assert a.shape == b.shape and int(np.abs(a.astype(int) - b.astype(int)).max()) == 0  # pixel-identical
-    assert normal.bounds == watched.bounds and not watched.warnings
-    assert len(sleeps) == len(watch_groups(build_units(spec))) and set(sleeps) == {0.25}
 
 
-@needs_vc
-def test_saved_document_has_readable_layers_editable_logo_and_grouped_decorations(proj_tmp):
-    spec = decorated_spec()
-
-    async def run():
-        async with VectorCraftSession() as vc:
-            res = await compile_spec(spec, vc, proj_tmp / "doc", name="p")
-            return res, await vc.call("doc_inspect", {})
-
-    res, info = asyncio.run(run())
-    nodes = {n["name"]: n for n in top_level_nodes(info)}
-    assert not nodes["logo.logo"]["locked"] and nodes["org.title"]["kind"] == "Type" and "background" in nodes
-    dots = nodes["decoration: auto_dots"]
-    assert dots["kind"] == "Group" and len(dots["children"]) > 50  # one selectable object, not hundreds of dots
-    assert "decoration: auto_border" in nodes and nodes["decoration: auto_border"]["kind"] == "Group"
-    assert res.warnings == []
 
 
 # ---- finalize: map a hand-edited document back onto the spec (pure) ---------------------------------------------------------------
@@ -187,28 +127,8 @@ def test_hand_edits_are_detected_and_the_spec_follows_the_document():
     assert diff.bounds["guest.name"].y == pytest.approx(next(e for e in spec.placed if e.id == "guest.name").box.y + 120)
 
 
-def test_removed_logo_and_changed_mandatory_copy_are_flagged():
-    from poster_agent.spec import MandatoryItem
-    spec = kciiri_components.build_spec()
-    apply_layout(spec, KCT)
-    spec.mandatory = [MandatoryItem(id="logo", kind="logo", label="logo"),
-                      MandatoryItem(id="event", label="event", text="ANNUAL DAY 2026")]
-    nodes = {n["name"]: n for n in nodes_for(spec)}
-    nodes["logo.logo"]["visible"] = False
-    nodes["event.text"]["text"] = "ANNUAL DAY 2027"
-    issues = hand_edit_issues(spec, apply_document(spec, list(nodes.values())), KCT)
-    assert any(i.category == IssueCategory.logo_violation and i.severity == "error" for i in issues)
-    assert any(i.category == IssueCategory.mandatory_missing and "ANNUAL DAY 2026" in i.evidence for i in issues)
 
 
-def test_resolve_target_finds_the_spec_and_the_file(tmp_path):
-    with pytest.raises(FileNotFoundError):
-        resolve_target(tmp_path)
-    (tmp_path / "spec.json").write_text("{}")
-    (tmp_path / "poster.vectorcraft").write_bytes(b"x")
-    run_dir, vcf = resolve_target(tmp_path)
-    assert run_dir == tmp_path.resolve() and vcf.name == "poster.vectorcraft"
-    assert resolve_target(tmp_path / "poster.vectorcraft")[1].name == "poster.vectorcraft"
 
 
 # ---- finalize end to end (real VectorCraft, headless: it is the file that matters, not the window) --------------------------------

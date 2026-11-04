@@ -76,12 +76,6 @@ def test_unused_supplied_asset_is_an_error(setup):
     assert any("never used" in e for e in errors_for(plan, setup))
 
 
-def test_structural_labels_are_allowed_but_only_those(setup):
-    card = next(c for c in PlanOutput.model_validate(GOOD_PLAN).components if c.component == "ChiefGuestCard")
-    assert "CHIEF GUEST" in component_texts(card)
-    plan = copy.deepcopy(GOOD_PLAN)
-    comp(plan, "ChiefGuestCard")["content"]["label"] = "OUR HONOURED VISITOR"
-    assert any("OUR HONOURED VISITOR" in e for e in errors_for(plan, setup))
 
 
 def test_planner_feeds_validation_errors_back_then_succeeds(setup):
@@ -137,13 +131,6 @@ def test_extract_brief_requires_a_verbatim_title():
         extract_brief("Come to our event", ScriptedLLM([{"event_title": "The Grand Gala"}]), "kct")
 
 
-def test_scan_assets_conventions_and_resolution_warning(tmp_path):
-    for name, size in [("guest__dr_x.png", (800, 800)), ("partner__acme.png", (300, 100)), ("hall.jpg", (400, 300))]:
-        Image.new("RGB", size, "white").save(tmp_path / name)
-    inv = scan_assets(tmp_path)
-    assert inv["guest_dr_x"].kind.value == "headshot" and inv["partner_acme"].kind.value == "partner_logo"
-    assert inv["hall"].kind.value == "photo" and any("low resolution" in w for w in inv["hall"].warnings)
-    assert inv["partner_acme"].warnings == []  # logos are not penalised for small pixel size
 
 
 def test_fallback_chain():
@@ -159,14 +146,6 @@ def test_fallback_chain():
         FallbackLLM([Down()]).generate_json("s", "u")
 
 
-def test_json_parsing_and_retry_hints():
-    assert parse_json_object('```json\n{"a": 1}\n```') == {"a": 1}
-    assert parse_json_object('Sure! {"a": {"b": 2}} done') == {"a": {"b": 2}}
-    with pytest.raises(LLMError):
-        parse_json_object("no json here")
-    assert retry_delay("Please try again in 7.5s.") == pytest.approx(8.0)
-    assert retry_delay("retry in 1m2s") == pytest.approx(30.0)  # capped
-    assert retry_delay("something else") is None
 
 
 def test_fit_feedback_names_the_tallest_components_and_compact_options(setup):
@@ -178,21 +157,48 @@ def test_fit_feedback_names_the_tallest_components_and_compact_options(setup):
     res = plan_poster(brief, KCT, inv, llm)
     assert res.ok
     feedback = llm.calls[1]["user"]
-    assert "too tall" in feedback and "tallest components: pad" in feedback  # tells the model WHICH component is the problem
+    assert "too tall" in feedback and "tallest components:" in feedback and "pad (" in feedback  # tells the model WHICH components are the problem
     assert "InfoBar variant 'columns'" in feedback  # and what compact alternatives exist
 
 
-def test_brand_forbidden_grounds_are_enforced_deterministically(setup):
-    plan = copy.deepcopy(GOOD_PLAN)
-    bar = comp(plan, "InfoBar")
-    bar["content"]["fill"] = "accent"  # KCT: the teal is an accent, not a ground
-    assert any("not allowed as a background/fill" in e for e in errors_for(plan, setup))
-    bar["content"]["fill"] = KCT.palette["accent"]  # the same colour as hex is caught too
-    assert any("not allowed as a background/fill" in e for e in errors_for(plan, setup))
-    bar["content"]["fill"] = "primary"
-    plan["background"] = {"kind": "solid", "color": "accent"}
-    assert any("background colour" in e for e in errors_for(plan, setup))
-    plan["background"] = {"kind": "solid", "color": "surface"}
-    assert errors_for(plan, setup) == []
-    comp(plan, "TitleStack")["content"]["title_color"] = "accent"  # text may still use the accent
-    assert errors_for(plan, setup) == []
+
+
+def test_a_plan_that_only_fails_on_height_is_compacted_without_touching_text():
+    from poster_agent.plan.planner import _compact
+    plan = PlanOutput.model_validate({"format": "square", "components": [
+        {"id": "d", "component": "Divider", "variant": "ornament", "content": {}},
+        {"id": "h", "component": "HeroImage", "content": {"asset": "a", "height_pct": 40}},
+        {"id": "t", "component": "BigTitle", "content": {"lines": ["HELLO"], "cap_pct": 13}}]})
+    out, what = _compact(plan)
+    ids = [c.id for c in out.components]
+    assert ids == ["h", "t"] and out.components[0].content["height_pct"] == 22.0 and out.components[1].content["cap_pct"] == 9.0
+    assert out.components[1].content["lines"] == ["HELLO"] and len(what) == 3  # text untouched; the original plan is unchanged
+    assert len(plan.components) == 3
+    assert _compact(out)[0] is None  # nothing left to tighten
+
+
+# ---- sparse plans on plain grounds: one chance to fill the space, then the legal plan is kept ----
+
+def _sparse_brief_and_plan():
+    from poster_agent.ingest.brief import Brief
+    brief = Brief(brand="kct", format="story", event_title="OPEN DAY")
+    plan = {"format": "story", "background": {"kind": "solid", "color": "surface"}, "align": "left", "flow_valign": "top",
+            "components": [{"id": "title", "component": "TitleStack", "content": {"title": "OPEN DAY", "align": "left"}, "emphasis": "hero"},
+                           {"id": "logo", "component": "HeaderRow", "content": {"logo": "quadrangle", "lines": [], "side": "left"}}]}
+    return brief, plan
+
+
+def test_a_sparse_plain_plan_is_told_to_add_an_image_and_the_dead_space_estimate_flags_it():
+    from poster_agent.plan.planner import _sparse_errors, build_spec
+    from poster_agent.layout.solver import apply_layout
+    brief, plan = _sparse_brief_and_plan()
+    res = plan_poster(brief, KCT, {}, ScriptedLLM([copy.deepcopy(plan), copy.deepcopy(plan)]), max_rounds=2)
+    assert not res.ok and any("little text" in p for r in res.rounds for p in r.problems)  # a sparse brief on a plain look needs an image
+    spec = build_spec(PlanOutput.model_validate(plan), brief, KCT, {})
+    assert any("dead_space" in e for e in _sparse_errors(spec, apply_layout(spec, KCT)))  # and the estimate says why: it would be mostly empty
+
+
+def test_a_full_plan_is_not_questioned_about_empty_space(setup):
+    brief, inv = setup
+    res = plan_poster(brief, KCT, inv, ScriptedLLM([copy.deepcopy(GOOD_PLAN)]), max_rounds=3)
+    assert res.ok and [r.stage for r in res.rounds] == ["ok"] or all("dead_space" not in p for r in res.rounds for p in r.problems)

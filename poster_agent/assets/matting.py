@@ -47,3 +47,9 @@ def alpha_coverage(img: Image.Image) -> float:
     """Fraction of pixels that are mostly opaque (a sanity metric: ~0 or ~1 means the matting failed)."""
     a = np.array(img.convert("RGBA").getchannel("A"))
     return float((a > 128).mean())
+
+
+def subject_mask(img: Image.Image) -> np.ndarray:
+    """Boolean matte of the main subject (used to LOCATE a person, never to alter the photo)."""
+    from rembg import remove
+    return np.array(remove(img.convert("RGB"), session=_session(), only_mask=True)) > 128

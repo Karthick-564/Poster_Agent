@@ -38,6 +38,8 @@ class Brief(BaseModel):
     partner_assets: list[str] = Field(default_factory=list)  # inventory ids of partner/sponsor logos
     photo_assets: list[str] = Field(default_factory=list)  # inventory ids of event photos
     contact_lines: list[str] = Field(default_factory=list)
+    look: str | None = None  # optional: force a look (plan/looks.py: clean_light | brand_blue | tint_soft | dark_art)
+    layout_style: str | None = None  # optional: force a composition recipe (see plan/prompt.py RECIPES)
     cta: str | None = None
     extra_lines: list[str] = Field(default_factory=list)
     style_notes: str | None = None  # free-form mood/audience hints for the planner (never printed)

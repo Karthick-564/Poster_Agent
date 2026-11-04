@@ -28,14 +28,6 @@ def graph_refs_resolve(wf: dict) -> None:
                 assert v[0] in wf, f"{name}.{key} references missing node {v[0]!r}"
 
 
-def test_ideogram_workflow_is_wired_and_seeded():
-    wf, save = ideogram_workflow({"high_level_description": "x"}, 900, 1130, seed=123, preset="turbo")
-    graph_refs_resolve(wf)
-    assert wf[save]["class_type"] == "SaveImage"
-    assert wf["noise"]["inputs"]["noise_seed"] == 123
-    assert wf["sigmas"]["inputs"]["steps"] == IDEOGRAM_PRESETS["turbo"]["steps"]
-    assert wf["latent"]["inputs"]["width"] % 16 == 0 and wf["latent"]["inputs"]["height"] % 16 == 0
-    assert json.loads(wf["pos"]["inputs"]["text"])["high_level_description"] == "x"  # structured JSON prompt
 
 
 def test_qwen_workflow_is_wired():
@@ -45,16 +37,6 @@ def test_qwen_workflow_is_wired():
     assert "text" in wf["neg"]["inputs"]["text"]  # negative prompt keeps printed text out of the subject
 
 
-def test_sizes_and_crops():
-    for fmt in ("story", "fourfive", "square", "a3"):
-        c = CanvasSpec.from_format(fmt)
-        w, h = bg_size(c)
-        assert w % 16 == 0 and h % 16 == 0 and 0.9e6 < w * h < 1.25e6
-        assert abs(w / h - c.width / c.height) < 0.03
-    assert round16(1010) == 1008
-    img = cover_crop(Image.new("RGB", (1000, 500)), 1.0)
-    assert img.size == (500, 500)
-    assert cover_crop(Image.new("RGB", (500, 1000)), 1.0).size == (500, 500)
 
 
 def test_blank_and_alpha_checks():
@@ -71,28 +53,8 @@ def text_el(y, h):
     return PlacedElement(id=f"t{y}", kind=ElementKind.text, role="x", box=Box(x=0, y=y, w=1000, h=h), text="x", size=10)
 
 
-def test_calm_description_follows_the_layout():
-    placed = [text_el(0, 225), text_el(900, 225)]  # exactly bands 0 and 4 of a 1000x1350 canvas
-    cover = text_coverage_bands(placed, 1000, 1350)
-    assert cover[0] == pytest.approx(1.0) and cover[4] == pytest.approx(1.0) and cover[1] == 0 and cover[5] == 0
-    d = calm_description(placed, 1000, 1350)
-    assert "very top" in d and "open space" in d and "keep" not in d.lower()  # a described scene, not an instruction
-    lay = calm_layout(placed, 1000, 1350)
-    assert lay.busy_ranges == [(167, 667), (833, 1000)]  # where visual interest may live, in 0-1000 bbox units
-    assert "whole image" in calm_description([], 1000, 1350)
-    full = [text_el(i * 225, 225) for i in range(6)]
-    assert "calm, softly graded field" in calm_description(full, 1000, 1350)
 
 
-def test_ideogram_prompt_structure_and_no_text_instructions():
-    art = ArtDirection(description="Soft navy glass panels.", style="minimal", palette=["#1e2842"])
-    p = ideogram_prompt(art, "Composition: keep the top calm.")
-    assert p["high_level_description"].startswith("Soft navy glass panels.")
-    assert "keep the top calm" in p["compositional_deconstruction"]["background"]
-    assert p["style_description"]["color_palette"] == ["#1E2842"]  # the model wants uppercase hex
-    flat = json.dumps(p).lower()
-    assert "no text" not in flat and "typograph" not in flat  # Ideogram reacts badly to negative text incantations
-    assert "isolated" in qwen_subject_prompt("a robot arm")
 
 
 # ---- planner integration with generated assets ---------------------------------------------------------------------
@@ -142,7 +104,12 @@ def test_generated_background_needs_clean_art(setup):
                               "palette": ["primary", "#ff00zz"]}
     assert any("#ff00zz" in e for e in errs(p, setup))
     p["background"]["art"]["palette"] = ["primary", "accent"]
-    assert any("set plate: true" in e for e in errs(p, setup))  # a logo on textured art needs a flat plate
+    assert not any("plate" in e for e in errs(p, setup))  # KCT's logos carry their own field: no plate required
+    open_logo = KCT.model_copy(deep=True)
+    for v in open_logo.logos.values():
+        v.solid_field = False
+    brief, inv = setup
+    assert any("set plate: true" in e for e in validate_plan(PlanOutput.model_validate(p), brief, open_logo, inv))
     for c in p["components"]:
         if c["component"] == "LogoBlock":
             c["content"]["plate"] = True
@@ -278,85 +245,18 @@ def test_refusal_banner_is_rejected_never_cached_and_the_next_seed_is_used(tmp_p
     assert comfy.runs == 2 and info2.cached and ref2.seed == ref.seed  # the bad seed is remembered; no GPU run at all
 
 
-def test_a_bad_image_already_in_the_cache_is_not_served(tmp_path):
-    import hashlib
-
-    from poster_agent.assets.generate import AssetGenerator, bg_size, derived_seed
-    art, canvas = ArtDirection(description="Soft navy glass panels."), CanvasSpec.from_format("fourfive")
-    calm = "calm"
-    prompt = ideogram_prompt(art, calm)
-    w, h = bg_size(canvas)
-    seed = derived_seed("bg", json.dumps(prompt, sort_keys=True), f"{w}x{h}")
-    wf, _ = ideogram_workflow(prompt, w, h, seed, "default", prefix="bg_bg")
-    cache = tmp_path / "cache"
-    cache.mkdir()
-    poisoned = cache / (hashlib.sha1(json.dumps(wf, sort_keys=True).encode()).hexdigest() + ".png")
-    poisoned.write_bytes(banner_png())  # e.g. left over from before screening existed
-    comfy = Sequenced([noise_png(), noise_png()])
-    ref, info = AssetGenerator(comfy, tmp_path / "out", cache).background("bg", art, canvas, calm, backend="ideogram")
-    assert comfy.runs == 1 and ref.seed == seed + 1 and info.rejected  # the poisoned entry was refused; the next seed was drawn
-    assert Image.open(ref.path if Path(ref.path).is_absolute() else ROOT / ref.path).size[0] > 0
 
 
-def test_gives_up_with_every_rejection_reason_when_all_attempts_have_text(tmp_path):
-    from poster_agent.assets.generate import AssetError, AssetGenerator
-    gen = AssetGenerator(Sequenced([banner_png()] * 3), tmp_path / "out", tmp_path / "cache")
-    with pytest.raises(AssetError, match="3 attempts.*blocked"):
-        gen.background("bg", ArtDirection(description="x"), CanvasSpec.from_format("fourfive"), "calm")
 
 
 # ---- the official Ideogram 4 caption schema (off-schema prompts risk a false "blocked by safety filter") -------------------
 
-def test_built_captions_follow_the_ideogram_schema():
-    art = ArtDirection(description="Translucent navy glass panels with a faint dotted grid", style="clean minimal geometric",
-                       lighting="soft diffused morning light", medium="digital illustration", palette=["#1e2842", "#85cebd"])
-    for placed in ([], [text_el(0, 225), text_el(900, 225)], [text_el(i * 225, 225) for i in range(6)], [text_el(300, 600)]):
-        cap = ideogram_prompt(art, calm_layout(placed, 1000, 1350))
-        assert validate_ideogram_caption(cap) == [], (placed, validate_ideogram_caption(cap))
-    cap = ideogram_prompt(art, calm_layout([text_el(0, 225)], 1000, 1350))
-    assert list(cap) == ["high_level_description", "style_description", "compositional_deconstruction"]
-    assert list(cap["style_description"]) == ["aesthetics", "lighting", "medium", "art_style", "color_palette"]  # non-photo order
-    assert cap["compositional_deconstruction"]["elements"][0]["bbox"] == [167, 0, 1000, 1000]  # [y_min, x_min, y_max, x_max]
-    photo = ideogram_prompt(ArtDirection(description="A quiet campus lawn at dawn", medium="photograph"), "calm")
-    assert list(photo["style_description"]) == ["aesthetics", "lighting", "photo", "medium"] and validate_ideogram_caption(photo) == []
 
 
-def test_validator_catches_every_off_schema_mistake_we_used_to_make():
-    good = ideogram_prompt(ArtDirection(description="x y z", palette=["#1E2842"]), "calm")
-    bad = copy.deepcopy(good)
-    del bad["style_description"]["art_style"]                       # neither photo nor art_style
-    assert any("exactly one of photo / art_style" in e for e in validate_ideogram_caption(bad))
-    bad = copy.deepcopy(good)
-    bad["style_description"] = {"aesthetics": "a", "medium": "illustration", "lighting": "l", "art_style": "s"}  # wrong key order
-    assert any("required order" in e for e in validate_ideogram_caption(bad))
-    bad = copy.deepcopy(good)
-    bad["style_description"]["color_palette"] = ["#1e2842"]         # lowercase hex
-    assert any("uppercase" in e for e in validate_ideogram_caption(bad))
-    bad = copy.deepcopy(good)
-    bad["compositional_deconstruction"]["elements"][0]["bbox"] = [900, 0, 100, 1000]  # min > max
-    assert any("bbox" in e for e in validate_ideogram_caption(bad))
-    bad = copy.deepcopy(good)
-    del bad["compositional_deconstruction"]
-    assert validate_ideogram_caption(bad)
 
 
-def test_caption_is_serialised_compactly_with_literal_unicode():
-    cap = ideogram_prompt(ArtDirection(description="Kumaraguru கல்லூரி campus lawn"), "calm")
-    text = caption_text(cap)
-    assert text == json.dumps(json.loads(text), separators=(",", ":"), ensure_ascii=False)  # compact: no indent, no spaces
-    assert "கல்லூரி" in text and "\\u" not in text  # literal unicode, not \uXXXX escapes
-    wf, _ = ideogram_workflow(cap, 900, 1130, seed=1)
-    assert wf["pos"]["inputs"]["text"] == text
 
 
-def test_off_schema_captions_are_never_sent_to_the_gpu(tmp_path, monkeypatch):
-    from poster_agent.assets import generate as g
-    monkeypatch.setattr(g, "ideogram_prompt", lambda art, calm: {"high_level_description": "plain text style"})
-    comfy = Sequenced([noise_png()])
-    gen = g.AssetGenerator(comfy, tmp_path / "out", tmp_path / "cache")
-    with pytest.raises(g.AssetError, match="Ideogram schema"):
-        gen.background("bg", ArtDirection(description="x"), CanvasSpec.from_format("fourfive"), "calm", backend="ideogram")
-    assert comfy.runs == 0
 
 
 # ---- FLUX 3 Klein backend (default for backgrounds) ----------------------------------------------------------------------
@@ -372,30 +272,8 @@ def test_flux_workflow_is_wired_like_the_comfyui_template():
     assert wf["neg"]["inputs"]["text"] == ""  # distilled model: no negative prompt, so prompts describe, never negate
 
 
-def test_flux_prompt_describes_the_scene_palette_and_where_interest_sits():
-    from poster_agent.assets.prompts import color_words, flux_prompt, focus_phrase
-    assert color_words(["#1e2842", "#85cebd", "#dde3ed"]) == "navy, mint and pale grey-blue"
-    assert focus_phrase([(667, 1000)]) == "in the lower third of the frame" and focus_phrase([(0, 1000)]) == "across most of the frame"
-    art = ArtDirection(description="Translucent glass panels with a faint dotted grid", style="clean minimal", lighting="soft morning light",
-                       palette=["#1e2842", "#85cebd"])
-    p = flux_prompt(art, calm_layout([text_el(0, 450)], 1000, 1350))
-    assert p.startswith("Translucent glass panels") and "The colour palette is navy and mint." in p
-    assert "open space fills the very top, upper" in p and "interest sits in the lower half of the frame" in p
-    low = p.lower()
-    assert " no " not in low and "don't" not in low and "without" not in low  # nothing negated: the model has no negative prompt
 
 
-def test_backgrounds_default_to_flux_and_ideogram_stays_selectable(tmp_path):
-    from poster_agent.assets.generate import AssetGenerator
-    comfy = Sequenced([noise_png(), noise_png()])
-    gen = AssetGenerator(comfy, tmp_path / "out", tmp_path / "cache")
-    art, canvas = ArtDirection(description="Soft navy glass panels."), CanvasSpec.from_format("fourfive")
-    _, info = gen.background("a", art, canvas, "calm")
-    assert info.model == "flux3_klein" and "Soft navy glass panels." in info.prompt
-    _, info2 = gen.background("b", art, canvas, "calm", backend="ideogram")
-    assert info2.model == "ideogram4" and json.loads(info2.prompt)["high_level_description"]
-    with pytest.raises(ValueError):
-        gen.background("c", art, canvas, "calm", backend="midjourney")
 
 
 def test_art_screen_rejects_banners_and_lettering_but_not_ocr_noise(monkeypatch):

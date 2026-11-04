@@ -7,9 +7,11 @@ never modified, the treated copy is recorded on the asset (`treatment`), and log
 from __future__ import annotations
 
 import hashlib
+import shutil
 from pathlib import Path
 
-from PIL import Image, ImageOps
+import numpy as np
+from PIL import Image, ImageFilter, ImageOps
 
 from poster_agent.layout.base import resolve_color
 from poster_agent.spec import AssetKind, AssetRef, ElementKind, PosterSpec
@@ -57,3 +59,62 @@ def apply_treatments(spec: PosterSpec, brand: BrandProfile, out_dir: Path) -> li
         el.asset_id = aid
         notes.append(f"{el.id}: {mode} {dark}->{light} applied to a copy of {src.id}")
     return notes
+
+
+# ---- generated backgrounds are a quiet backdrop, not the subject ------------------------------------------------------------------
+def art_energy(img: Image.Image) -> dict[str, float]:
+    """How loud a picture is: mean saturation, luminance contrast and local detail (all 0..1)."""
+    small = img.convert("RGB").resize((128, 128))
+    sat = float((np.asarray(small.convert("HSV"), dtype=float)[..., 1] / 255.0).mean())
+    lum = np.asarray(small.convert("L"), dtype=float) / 255.0
+    gy, gx = np.gradient(lum)
+    return {"saturation": round(sat, 3), "contrast": round(float(lum.std()), 3), "detail": round(float(np.hypot(gx, gy).mean()), 4)}
+
+
+def calm_strengths(e: dict[str, float]) -> dict[str, float]:
+    """How much to tone down each aspect of a picture, 0..1, from how far THAT aspect exceeds what text can sit on. Saturation, contrast
+    and detail are judged separately: a pale picture with fine detail is blurred a little, not drained of its colour."""
+    clip = lambda v: float(min(max(v, 0.0), 1.0))
+    return {"saturation": clip((e["saturation"] - 0.28) / 0.30), "contrast": clip((e["contrast"] - 0.16) / 0.20),
+            "detail": clip((e["detail"] - 0.015) / 0.030)}
+
+
+def calm_strength(e: dict[str, float]) -> float:
+    """One number for reporting: the loudest aspect, never below 0.25 (every backdrop is nudged a little toward the brand tint)."""
+    return max(0.25, *calm_strengths(e).values())
+
+
+def calm_art(img: Image.Image, tint_hex: str, strength: float | None = None) -> tuple[Image.Image, dict]:
+    """Tone generated art down so type can sit on it: lower saturation, compressed contrast, a touch of blur (depth of field) and a pull
+    toward the brand tint, each in proportion to how loud that aspect is. Deterministic; applies to generated art only (supplied photos
+    are never altered this way). `strength` forces one value for all aspects (tests, manual use)."""
+    before = art_energy(img)
+    k = calm_strengths(before) if strength is None else {"saturation": strength, "contrast": strength, "detail": strength}
+    overall = calm_strength(before) if strength is None else strength
+    rgb = img.convert("RGB")
+    h, s, v = rgb.convert("HSV").split()
+    s = s.point(lambda p: int(p * (1 - 0.55 * k["saturation"])))
+    out = np.asarray(Image.merge("HSV", (h, s, v)).convert("RGB"), dtype=float)
+    mean = out.mean(axis=(0, 1), keepdims=True)
+    out = mean + (out - mean) * (1 - 0.40 * k["contrast"])  # compress contrast around the picture's own mean
+    mix = 0.08 + 0.22 * max(k["saturation"], k["contrast"], 0.0)  # pull toward the brand tint follows the colour / contrast calming
+    tint = np.array([int(tint_hex[i:i + 2], 16) for i in (1, 3, 5)], dtype=float)
+    out = out * (1 - mix) + tint * mix
+    res = Image.fromarray(np.clip(out, 0, 255).astype(np.uint8))
+    if k["detail"] > 0.1:
+        res = res.filter(ImageFilter.GaussianBlur(radius=max(res.width / 1080.0, 1.0) * 1.8 * k["detail"]))
+    return res, {"strength": round(overall, 2), "aspects": {a: round(x, 2) for a, x in k.items()}, "before": before, "after": art_energy(res)}
+
+
+def calm_background(path: Path, brand: BrandProfile, tone: str) -> str:
+    """Calm the generated background file in place (the untouched original is kept as <name>_raw.png). Returns a one-line note."""
+    path = Path(path)
+    raw = path.with_name(path.stem + "_raw" + path.suffix)
+    shutil.copy(path, raw)  # `path` was just (re)generated: keep that untouched original beside the calmed file
+    with Image.open(raw) as im:
+        tint = resolve_color(brand, "primary" if tone == "dark" else "surface")
+        out, info = calm_art(im, tint)
+    out.save(path)
+    b, a = info["before"], info["after"]
+    return (f"background art calmed (strength {info['strength']:.2f}: saturation {b['saturation']:.2f}->{a['saturation']:.2f}, "
+            f"contrast {b['contrast']:.2f}->{a['contrast']:.2f}, detail {b['detail']:.3f}->{a['detail']:.3f})")

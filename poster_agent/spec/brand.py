@@ -28,11 +28,14 @@ class LogoVariant(BaseModel):
     field: Literal["any", "light", "dark"] = "any"  # background the artwork may sit on
     min_width_pct: float = 10.0  # minimum logo width as % of canvas width
     aspect: float = 0.0  # width/height, read from the file at load time
+    solid_field: bool = False  # the artwork carries its own opaque, uniform field (e.g. a navy square): detected at load time
     path: str = ""  # project-root-relative path, resolved at load time
 
 
 class LogoRules(BaseModel):
     clear_space_mm: float = 10.0
+    max_width_pct: float = 22.0  # a logo never exceeds this share of the canvas width (a planner asking for more is clamped)
+    max_height_pct: float = 12.0  # ...nor this share of the canvas height
     allow_gradient_behind: bool = False
     placement_preference: list[str] = Field(default_factory=lambda: ["top-right", "top-left"])
     partner_logo_side: Literal["left", "right"] = "left"  # which side of a partner logo ours sits on
@@ -93,6 +96,15 @@ class BrandProfile(BaseModel):
         return self.logos[name or self.default_logo]
 
 
+def _has_solid_field(im: Image.Image) -> bool:
+    """True if the artwork's outer ring is one opaque, uniform colour: the logo brings its own field, so it can sit on any ground
+    without a plate (the brand's clear space still applies)."""
+    import numpy as np
+    a = np.asarray(im.convert("RGBA"), dtype=float)
+    ring = np.concatenate([a[:2].reshape(-1, 4), a[-2:].reshape(-1, 4), a[:, :2].reshape(-1, 4), a[:, -2:].reshape(-1, 4)])
+    return bool(ring[:, 3].min() > 250 and ring[:, :3].std(axis=0).max() < 8)
+
+
 def load_brand(key: str, brands_dir: Path = BRANDS_DIR) -> BrandProfile:
     key = key.lower()
     brand_dir = brands_dir / key
@@ -107,6 +119,7 @@ def load_brand(key: str, brands_dir: Path = BRANDS_DIR) -> BrandProfile:
             raise FileNotFoundError(f"brand {key!r} logo {name!r}: missing file {file}")
         with Image.open(file) as im:
             logo.aspect = im.width / im.height
+            logo.solid_field = _has_solid_field(im)
         try:
             logo.path = file.relative_to(ROOT).as_posix()
         except ValueError:

@@ -1,0 +1,46 @@
+# A neutral EXAMPLE brand so the public repository can run its layout tests without any institution's assets.
+# Copy this folder to brands/<your_key>/ and replace the palette, fonts and logos with the real brand's.
+key: _example
+name: Example Institute of Technology
+short_name: Example
+
+palette:
+  primary: "#1b2a4a"
+  accent: "#2f9e8f"
+  tertiary: "#6b5b73"
+  neutral: "#c9ccd1"
+  surface: "#ffffff"
+  text: "#1b2a4a"
+
+fonts:
+  display: {family: Montserrat, style: Bold, fallbacks: [Arial]}
+  display_heavy: {family: Montserrat, style: ExtraBold, fallbacks: [Arial]}
+  body: {family: Montserrat, style: Regular, fallbacks: [Arial]}
+  light: {family: Montserrat, style: Light, fallbacks: [Arial]}
+  condensed: {family: Barlow Condensed, style: Bold, fallbacks: [Arial]}
+  condensed_regular: {family: Barlow Condensed, style: Regular, fallbacks: [Arial]}
+
+logos:
+  emblem: {file: logos/emblem.png, kind: primary, field: any, min_width_pct: 10}
+  wide:   {file: logos/wide.png,   kind: secondary, field: any, min_width_pct: 22}
+default_logo: emblem
+
+logo_rules:
+  clear_space_mm: 10
+  allow_gradient_behind: false
+  placement_preference: [top-right, top-left]
+  partner_logo_side: left
+
+mandatory_elements: [logo]
+
+footer:
+  website: www.example.edu
+  phone: "000 000 0000"
+  address: "1 Example Road, Example City"
+  auto_include: false
+
+min_text_contrast: 4.5
+safe_margin_pct: 4.5
+forbidden_grounds: [accent]
+background_rules:
+  - "Logo sits on a solid field; never on a gradient."

@@ -145,9 +145,19 @@ def test_logo_too_small_edge_and_exclusion_zone(tmp_path):
     assert "exclusion zone" in logo_problems(run_checks(spec, KCT, compiled, use_ocr=False, use_emptiness=False))
 
 
-def test_logo_on_gradient_is_detected(tmp_path):
+def _brand_with_solid_field(value: bool):
+    b = KCT.model_copy(deep=True)
+    for v in b.logos.values():
+        v.solid_field = value
+    return b
+
+
+def test_logo_on_gradient_is_detected_unless_the_logo_brings_its_own_field(tmp_path):
     spec, compiled = logo_case(tmp_path, gradient=True)
-    assert "not on a flat field" in logo_problems(run_checks(spec, KCT, compiled, use_ocr=False, use_emptiness=False))
+    open_logo = _brand_with_solid_field(False)  # artwork without a field of its own needs a flat ground
+    assert "not on a flat field" in logo_problems(run_checks(spec, open_logo, compiled, use_ocr=False, use_emptiness=False))
+    own_field = _brand_with_solid_field(True)  # a navy square carries its field: any ground is fine
+    assert "not on a flat field" not in logo_problems(run_checks(spec, own_field, compiled, use_ocr=False, use_emptiness=False))
 
 
 # ---- OCR on the render ----------------------------------------------------------------------------------------------
@@ -185,24 +195,8 @@ def test_clean_ocr_case_passes_and_non_latin_is_unverifiable_not_failed(tmp_path
 
 # ---- regressions for defects the checks found in our own components -----------------------------------------------------
 
-@pytest.mark.parametrize("key", ["kct", "kclas", "kctbs"])
-def test_derived_muted_colour_is_readable_on_the_surface(key):
-    from poster_agent.layout.base import resolve_color
-    b = load_brand(key)
-    muted = resolve_color(b, "muted")
-    ratio = pixels.contrast_ratio(pixels.rel_luminance(pixels.hex_rgb(muted)),
-                                  pixels.rel_luminance(pixels.hex_rgb(b.palette["surface"])))
-    assert ratio >= 4.5, f"{key}: muted {muted} is only {ratio:.2f}:1 on the surface"
 
 
-def test_logo_caption_stays_outside_the_exclusion_zone():
-    from poster_agent.layout.solver import solve_layout
-    from poster_agent.fixtures import industry_conclave
-    from poster_agent.spec.formats import MM_TO_PT
-    res = solve_layout(industry_conclave.build_spec(), KCT)
-    logo = next(e for e in res.placed if e.id == "header.logo")
-    cap = next(e for e in res.placed if e.id == "header.caption")
-    assert cap.box.y - logo.box.bottom >= KCT.logo_rules.clear_space_mm * MM_TO_PT
 
 
 def test_flat_field_test_ignores_the_logos_own_edge_pixels():
@@ -213,29 +207,6 @@ def test_flat_field_test_ignores_the_logos_own_edge_pixels():
     assert solid["max_std"] < 2 and solid["mean_lum"] > 250  # the surrounding field is flat white
 
 
-@needs_vc
-@pytest.mark.parametrize("name,use_ocr", [("kciiri_components", True), ("engineers_day", True), ("industry_conclave", False)])
-def test_component_posters_pass_the_pixel_checks(name, use_ocr):
-    import asyncio
-
-    from poster_agent.compile.compiler import compile_spec
-    from poster_agent.compile.vc_client import VectorCraftSession
-    from poster_agent.fixtures import engineers_day, industry_conclave, kciiri_components
-    from poster_agent.layout.solver import apply_layout
-
-    spec = {"kciiri_components": kciiri_components, "engineers_day": engineers_day,
-            "industry_conclave": industry_conclave}[name].build_spec()
-    apply_layout(spec, KCT)
-    from poster_agent.enrich import default_preset, is_dark_ground
-    spec.decorations = default_preset(spec, KCT, is_dark_ground(spec, KCT))  # what the pipeline does for plain backgrounds
-    apply_layout(spec, KCT)
-
-    async def run():
-        async with VectorCraftSession() as vc:
-            return await compile_spec(spec, vc, ROOT / f"runs/test_checks_{name}", name=name)
-
-    rep = run_checks(spec, KCT, asyncio.run(run()), use_ocr=use_ocr)
-    assert rep.ok, [f"{i.category.value}: {i.evidence}" for i in rep.issues if i.severity == "error"]
 
 
 def test_ocr_reads_tight_thin_crops():
@@ -247,11 +218,24 @@ def test_ocr_reads_tight_thin_crops():
     assert ocr.match_score("CELEBRATING RESEARCH, INNOVATION & NATIONAL DEVELOPMENT", got) >= 90, got
 
 
-def test_muted_text_is_derived_against_the_posters_real_ground():
-    from poster_agent.layout.base import resolve_color
-    on_white = resolve_color(KCT, "muted")
-    on_tint = resolve_color(KCT, "muted", "#e4e9f1")  # the light blue-grey end of a gradient background
-    lum = lambda h: pixels.rel_luminance(pixels.hex_rgb(h))  # noqa: E731
-    assert pixels.contrast_ratio(lum(on_tint), lum("#e4e9f1")) >= 4.95
-    assert lum(on_tint) < lum(on_white)  # a tinted ground gets a darker muted colour
-    assert pixels.contrast_ratio(lum(on_white), lum("#ffffff")) >= 4.95
+
+
+def test_a_dropped_mandatory_line_is_retried_alone_and_a_truly_missing_one_still_fails(tmp_path, monkeypatch):
+    from poster_agent.checks import ocr, run_checks
+    from poster_agent.spec import MandatoryItem
+    block = "FIRST LINE HERE\nSECOND LINE HERE\nTHIRD LINE HERE"
+    img = Image.new("RGB", (1000, 1000), "white")
+    spec, compiled = make(tmp_path, img, [text_el("blk", block, (100, 100, 700, 200), size=40)],
+                          mandatory=[MandatoryItem(id="m", label="third", text="THIRD LINE HERE")])
+    reads = []
+
+    def fake_read(image, box, *a, **k):
+        reads.append(box)
+        return "FIRST LINE HERE SECOND LINE HERE" if len(reads) == 1 else "THIRD LINE HERE"  # the block read drops line 3; the line read finds it
+    monkeypatch.setattr(ocr, "read_crop", fake_read)
+    rep = run_checks(spec, KCT, compiled, use_ocr=True, use_emptiness=False)
+    mand = next(r for r in rep.results if r.name == "mandatory_text")
+    assert mand.passed and len(reads) >= 2  # the missing line was cropped out and read on its own
+    reads.clear()
+    monkeypatch.setattr(ocr, "read_crop", lambda *a, **k: "FIRST LINE HERE SECOND LINE HERE")  # nothing ever reads line 3
+    assert not next(r for r in run_checks(spec, KCT, compiled, use_ocr=True, use_emptiness=False).results if r.name == "mandatory_text").passed

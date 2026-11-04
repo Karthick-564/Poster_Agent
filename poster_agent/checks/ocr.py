@@ -102,11 +102,26 @@ def read_crop(img: Image.Image, box: tuple[int, int, int, int]) -> str:
     return text
 
 
+_LOOKALIKE = str.maketrans({"o": "0", "i": "1", "l": "1"})  # O/0 and I/l/1 are what OCR confuses most in times, years and numbers
+
+
+def fold(s: str) -> str:
+    """Lower-cased alphanumerics with look-alike characters merged (applied to both texts being compared, never to one alone)."""
+    return alnum(s).lower().translate(_LOOKALIKE)
+
+
 def match_score(expected: str, observed: str) -> float:
-    """0..100: how well `expected` appears inside `observed`, ignoring case, spaces and punctuation."""
+    """0..100: how well `expected` appears inside `observed`, ignoring case, spaces, punctuation and O/0, I/l/1 confusions."""
     e, o = alnum(expected), alnum(observed)
     if not e:
         return 100.0
     if not o:
         return 0.0
-    return float(fuzz.partial_ratio(e, o))
+    return float(max(fuzz.partial_ratio(e, o), fuzz.partial_ratio(fold(expected), fold(observed))))
+
+
+def line_score(expected: str, observed: str) -> float:
+    """Like match_score but for a multi-line block: the WORST line decides, so a read that dropped a line cannot score 100 (the plain
+    score only asks whether what was read appears inside the expected text)."""
+    lines = [ln for ln in expected.split("\n") if alnum(ln)]
+    return min((match_score(ln, observed) for ln in lines), default=100.0)
