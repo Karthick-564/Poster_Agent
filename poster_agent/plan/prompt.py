@@ -39,7 +39,11 @@ HARD RULES
    background.kind "generated" (with background.art) only when the brief's mood/theme genuinely benefits from atmospheric art, and
    declare an object hero in generated_assets (+ a HeroImage component using its id) only when no supplied photo can serve.
    Art descriptions and subjects are imagery only: NEVER mention text, letters, logos, brands, people, faces or portraits, and never use
-   quotation marks. If you choose generated art set art.tone ("dark" art needs light text colours via "on_primary"/"surface").
+   quotation marks. Write art as a poster ART DIRECTOR, not a description: subject (one focal subject and where it sits), composition (camera angle,
+   foreground / middle / background layers, where the quiet space is), devices (curved horizon, diagonal light beam, layered shapes: what makes it
+   designable), color_roles (dominant, accent, light direction). Generic ("deep navy technology atmosphere") is wrong; specific ("a robot arm low in
+   the right third, shot from below, with a diagonal blue light beam crossing a dark upper half") is right. The art must depict the event's own subject: a concrete scene or objects named by the brief's title, subtitle,
+   tagline or style notes (use those nouns in art.description), not a generic abstract atmosphere. If you choose generated art set art.tone ("dark" art needs light text colours via "on_primary"/"surface").
 9. Clean, professional institutional look; never decorate to fill space (no glows, dots, rings or random shapes). `decorations` is
    optional (border / frame / stripe only; a default border is applied). Fill space with scale and structure, following DESIGN SKILLS and
    the assigned COMPOSITION. Component hints: BigTitle (short title scaled to the width, optional pill), TabBanner (anchor top), Columns
@@ -52,17 +56,21 @@ HARD RULES
    main; classic: no zones). With a non-classic template put every flow component in a zone, in reading order within it.
    Use the brand accent deliberately; text colours adapt to the real background automatically. Keep related lines together, in the
    brief's order. Only use text, photos and QR codes that the brief or inventory provides.
-10. Logos: check BRAND.logos[...].solid_field. A logo with solid_field true (a navy square, for example) brings its own field: place it
+10. Header logo: use the WIDE full college logo (BRAND.logos 'rectangle') as a LogoBlock with width_pct about 46, left-aligned or centred, as on the institution's own posters; never the small square logo for the header, and no date / time / venue beside it. Logos: check BRAND.logos[...].solid_field. A logo with solid_field true (a navy square, for example) brings its own field: place it
     directly on any ground and NEVER add `plate`. Only a logo with solid_field false needs `plate: true` on a dark or busy ground. Do NOT
     wrap the logo in a full-width Panel: that creates a large empty box. Heroes grow into spare space automatically; no filler.
 11. Keep text readable: light text ("on_primary"/"surface") only on dark fills such as "primary"; on light fills ("surface",
    "accent", gradients to white) use "primary" or "text". "muted" is only for secondary text on light grounds. Never put white
    text on "accent" fills.
-12. If you receive PROBLEMS, make the SMALLEST change that resolves them: keep every other component, its content, order,
+12. DESIGN DEVICES (pick the ones that serve the idea, name them in concept.devices; never decorate for its own sake): two_tone_ground = background.panel, a solid
+    brand-colour block from just above the flow component `starts_at` to the bottom edge (light top, dark information panel; text on it light); pull_quote = a
+    PullQuote component for a quote or tribute line; keyline_frame = a "frame" or "border" decoration; big_type = BigTitle / BigWord / display TitleStack; hero_image = a
+    photo or cutout; art_ground = generated art. The focal point is the one hero element; everything else supports it.
+13. If you receive PROBLEMS, make the SMALLEST change that resolves them: keep every other component, its content, order,
     emphasis and styling exactly as in YOUR PREVIOUS PLAN, and return the full corrected plan. Do not redesign.
 
-OUTPUT: one JSON object {{"format": str, "background": {{"kind": "solid|gradient|generated", "color": str, "gradient": [{{"offset": 0..1, "color": str}}], "angle": number,
-"art": {{"description": str, "style": str, "lighting": str, "medium": str, "tone": "light|dark", "palette": [str]}} (only for generated)}},
+OUTPUT: one JSON object, keys in this order. FIRST "concept": {{"idea": str (the one idea, one sentence), "focal_point": str (id of the hero component), "reading_order": [component ids, eye path, focal point first], "devices": [from two_tone_ground, pull_quote, keyline_frame, big_type, hero_image, art_ground], "contrast": str (the main contrast: scale, colour, weight or space)}}; decide it before the layout and make the plan do exactly what it says. Then {{"format": str, "background": {{"kind": "solid|gradient|generated", "panel": {{"color": str, "starts_at": component id}} (optional two-tone ground), "color": str, "gradient": [{{"offset": 0..1, "color": str}}], "angle": number,
+"art": {{"description": str, "subject": str, "composition": str, "devices": str, "color_roles": str, "style": str, "lighting": str, "medium": str, "tone": "light|dark", "palette": [str]}} (only for generated)}},
 "generated_assets": [{{"id": str, "kind": "hero_cutout", "subject": str, "aspect": "1:1|4:5|3:4|16:9|9:16"}}],
 "template": "house|split|giant_word|greeting|photo_led|classic|stage|two_col|top_art", "align": "center|left", "flow_valign": "top|balanced|center|bottom", "type_style": "classic|bold|elegant|editorial|condensed", "decorations": [{{"kind": "glow|dot_grid|rings|corner_shapes|diagonal_band|frame|stripe|watermark_text", "region": "full|top|bottom|left|right|center",
 "color": str, "opacity": 0.02-0.6, "text": str (watermark_text only), "density": 0.4-3}}],
@@ -112,11 +120,24 @@ RECIPES: dict[str, str] = {
 
 
 # Archetypes that suit each genre (see skills/genre-playbooks); the brief's title picks one of them deterministically.
-GENRE_RECIPES: dict[str, list[str]] = {  # the skeletons the institution's own posters use for each kind of event
-    "workshop": ["house", "split"], "recruitment": ["house"], "admission": ["house", "photo_led"], "conference": ["house"],
-    "talk": ["split", "house"], "cultural": ["house", "giant_word"], "sports": ["house", "photo_led"], "commemoration": ["greeting", "giant_word"],
-    "placement": ["house"], "launch": ["house", "giant_word"],
+GENRE_RECIPES: dict[str, list[str]] = {  # the skeletons the institution's own posters use for each kind of event; the title picks one
+    "workshop": ["house", "split", "giant_word"], "recruitment": ["house", "split", "giant_word"],
+    "admission": ["house", "photo_led", "split"], "conference": ["house", "split", "giant_word"],
+    "talk": ["split", "house", "photo_led"], "cultural": ["house", "giant_word", "split"], "sports": ["house", "photo_led", "giant_word"],
+    "commemoration": ["greeting", "giant_word"], "placement": ["house", "split", "giant_word"], "launch": ["house", "giant_word", "split"],
 }
+
+
+def wants_icon_row(brief) -> bool:
+    """The icon row is optional: about half the posters (chosen by the title, or forced with brief.icons) carry one."""
+    import hashlib
+    forced = getattr(brief, "icons", None)
+    return forced if isinstance(forced, bool) else int(hashlib.sha1(("icons|" + brief.event_title).encode()).hexdigest(), 16) % 2 == 0
+
+
+def icon_row_hint(brief) -> str:
+    """One sentence for the planner prompt: use an IconRow or not."""
+    return "Use an IconRow for the list lines." if wants_icon_row(brief) else "No IconRow: use Columns or a TextBlock."
 
 
 def composition_recipe(brief) -> tuple[str, str]:
@@ -192,9 +213,9 @@ def build_user_prompt(brief: Brief, brand: BrandProfile, inventory: dict[str, In
         *(["ICONS (names for IconRow): " + ", ".join(icon_names())] if len(brief.extra_lines) + len(brief.theme_lines) >= 3 else []),
         "ASSET INVENTORY:\n" + json.dumps(_inventory_block(inventory), separators=(",", ":")),
         "COMPOSITION FOR THIS POSTER (recipe '%s'; follow it unless the content makes it impossible): %s" % composition_recipe(brief),
-        "LOOK of this poster (applied to your plan automatically: ground colour, type style, headline treatment, text colours): "
-        "%s. Plan the content for that ground; use at most ONE image idea: generated art as the ground, or a cutout on the plain ground, "
-        "never both." % _look_text(brief),
+        "LOOK of this poster (only its ground and type style are applied to your plan; YOU choose the header, footer, text colours (light on "
+        "a dark ground, dark on a light one) and headline treatment): "
+        "%s. Generated art is a full-bleed ground; a cutout may stand on it. %s" % (_look_text(brief), icon_row_hint(brief)),
         "DEFAULT FORMAT: use \"story\" (84 %% of the catalogue) when the brief gives no format.",
         "DESIGN SKILLS (guidance for the concept and the plan; they add no copy, every printed word is from the brief):" + chr(10) + skills_text(brief),
         "BRIEF:\n" + json.dumps(brief.model_dump(exclude_none=True, exclude_defaults=True), separators=(",", ":"), ensure_ascii=False),

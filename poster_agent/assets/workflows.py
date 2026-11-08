@@ -15,6 +15,7 @@ IDEOGRAM_PRESETS = {  # ComfyUI's Ideogram 4 template presets
     "turbo": {"steps": 12, "mu": 0.5, "std": 1.75},
 }
 
+QWEN_BG_NEGATIVE = "text, letters, words, numbers, watermark, logo, signature, people, faces, blurry, low quality"  # a scene, not a cutout
 QWEN_NEGATIVE = ("blurry, low quality, noise, text, letters, watermark, logo, frame, border, cropped, cut off, "
                  "multiple subjects, busy background, floor, shadow on the ground, hands holding it")
 

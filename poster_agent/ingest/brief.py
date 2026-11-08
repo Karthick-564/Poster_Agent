@@ -39,6 +39,7 @@ class Brief(BaseModel):
     photo_assets: list[str] = Field(default_factory=list)  # inventory ids of event photos
     contact_lines: list[str] = Field(default_factory=list)
     look: str | None = None  # optional: force a look (plan/looks.py: clean_light | brand_blue | tint_soft | dark_art)
+    icons: bool | None = None  # optional: force an icon row on (true) or off (false); default alternates by title
     layout_style: str | None = None  # optional: force a composition recipe (see plan/prompt.py RECIPES)
     cta: str | None = None
     extra_lines: list[str] = Field(default_factory=list)

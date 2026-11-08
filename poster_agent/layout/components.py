@@ -543,3 +543,33 @@ class HeroImage(Component):
                 brackets.append(_shape(f"{spec.id}.br{i}{j}", "hero_frame", Box(x=rx, y=ry, w=rw, h=rh), z=4, fill=accent))
         img = _image(f"{spec.id}.img", "hero", Box(x=cx + pad, y=y + pad, w=bw, h=h), aid, z=8)
         return [card, *brackets, img], ch
+
+
+@register
+class PullQuote(Component):
+    """A large quotation with its attribution under a short accent rule. The quote and the attribution are the brief's own words
+    (quotation marks included if the brief has them); the rule is the only ornament."""
+    name = "PullQuote"
+    variants = ("default", "large")
+
+    def build(self, spec, ctx, x, y, w):
+        c, els, cur = spec.content, [], y
+        align = c.get("align", ctx.align)
+        if c.get("rule", True):
+            rw = 0.14 * w
+            rx = {"left": x, "center": x + (w - rw) / 2, "right": x + w - rw}[align if align in ("left", "center", "right") else "center"]
+            els.append(_shape(f"{spec.id}.rule", "divider", Box(x=rx, y=cur, w=rw, h=max(3.0, 0.004 * ctx.canvas.height)),
+                              fill=ctx.color(c.get("rule_color", "accent"))))
+            cur += max(3.0, 0.004 * ctx.canvas.height) + _gap(ctx, 0.9)
+        q, h = ctx.text(f"{spec.id}.quote", "heading", c["quote"], x, cur, w, color=c.get("quote_color", "text"), align=align,
+                        font_role=c.get("font_role"), factor=1.35 if spec.variant == "large" else 1.0, max_lines=c.get("max_lines", 6),
+                        source=spec.id)
+        els.append(q)
+        cur += h
+        if c.get("attribution"):
+            cur += _gap(ctx, 0.6)
+            a, ah = ctx.text(f"{spec.id}.by", "caption", c["attribution"], x, cur, w, color=c.get("attribution_color", "muted"),
+                             align=align, max_lines=2, source=spec.id)
+            els.append(a)
+            cur += ah
+        return els, cur - y

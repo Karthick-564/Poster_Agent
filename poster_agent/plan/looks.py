@@ -3,8 +3,8 @@
 The institution's own posters vary in the ground (white, solid brand blue, a soft tint, dark art), in how the headline is set (colour or
 weight contrast between its lines), and in what the imagery does (a cutout on a clean ground, OR art as the ground, never both). A look
 fixes those choices. It is chosen per brief (deterministically from the genre and the title, or forced with brief.look) and APPLIED to
-the plan after the planner has answered, so it cannot be skipped: ground, type style, a title treatment, consistent text colours, a header
-band when the ground is art, and one image idea. Nothing here writes copy; it only changes colours, fonts, backgrounds and styling."""
+the plan after the planner has answered: the ground, the type style and the image idea ONLY. Everything else (header, logo, footer, text
+colours, title treatment, structure) is the planner's own decision and is never rewritten here. Nothing here writes copy."""
 from __future__ import annotations
 
 import hashlib
@@ -23,7 +23,6 @@ class Look:
     type_style: str
     title_style: str  # accent_last | accent_first | weight_split | highlight_last
     imagery: str  # cutout: a generated or supplied cutout on the plain ground; art: generated art IS the ground (no cutout)
-    header_band: str | None = None  # palette name of a band behind the header strip when the ground is art
     dark: bool = False  # light text on this ground
 
 
@@ -34,8 +33,8 @@ LOOKS: dict[str, Look] = {
                        "primary", "bold", "accent_last", "cutout", dark=True),
     "tint_soft": Look("tint_soft", "soft light-grey tint ground, navy headline with a solid bar behind its last line, a cutout or photo",
                       "tint", "elegant", "highlight_last", "cutout"),
-    "dark_art": Look("dark_art", "generated art is the ground (no cutout), a brand-blue header band the logo merges into, light headline",
-                     "generated", "condensed", "accent_last", "art", header_band="primary", dark=True),
+    "dark_art": Look("dark_art", "full-bleed generated key visual as the ground (a cutout may stand on it), brand-blue header band, light headline",
+                     "generated", "condensed", "accent_last", "art", dark=True),
 }
 
 GENRE_LOOKS: dict[str, list[str]] = {
@@ -44,13 +43,6 @@ GENRE_LOOKS: dict[str, list[str]] = {
     "sports": ["dark_art", "brand_blue"], "commemoration": ["clean_light", "tint_soft"], "placement": ["brand_blue", "clean_light"],
     "launch": ["dark_art", "tint_soft"],
 }
-
-LIGHT_ON_DARK = {"text", "primary", "muted", "on_surface", "neutral"}
-DARK_ON_LIGHT = {"surface", "on_primary", "white"}
-COLOR_KEYS = {"TitleStack": ["title_color", "subtitle_color", "tagline_color", "eyebrow_color"], "HeaderRow": ["color"], "FactLine": ["color"],
-              "TextBlock": ["color"], "IconRow": ["label_color", "icon_color"], "FactStrip": ["value_color", "label_color"],
-              "QRBlock": ["caption_color"], "BigWord": ["color"], "BigTitle": ["color"]}
-KEEP_ACCENT = {"accent", "tertiary"}
 
 
 def look_for(brief) -> Look:
@@ -103,64 +95,35 @@ def apply_look(plan: PlanOutput, brand: BrandProfile, look: Look) -> list[str]:
     notes: list[str] = []
     generated_heroes = {a.id for a in plan.generated_assets}
     had_art = plan.background.kind == "generated" and plan.background.art is not None
+    has_cutout = any(_is_generated_image(c, generated_heroes) for c in _walk(plan.components))
     effective = look
     if look.ground == "generated" and not had_art:  # the planner offered no art to be the ground: use the closest plain look
         effective = LOOKS["brand_blue"]
         notes.append(f"look {look.name} needs generated art and the plan has none: used {effective.name}")
+    elif look.ground != "generated" and had_art and has_cutout:  # the planner asked for both: keep the art, it is the key visual
+        effective = LOOKS["dark_art"]
+        notes.append(f"look {look.name} -> {effective.name}: the plan has background art and a cutout, so the art is kept as the ground")
     plan.look = effective.name
 
-    # ---- ground: plain looks never keep generated background art (one image idea) ----
+    # ---- ground: a plain look has a plain ground; an art look keeps the art at full strength ----
     if effective.ground == "generated":
         plan.background.art.tone = "dark"
     else:
         if had_art:
-            notes.append("background art dropped: a cutout look keeps a plain ground")
+            notes.append("background art dropped: a plain look keeps a plain ground")
+        panel = plan.background.panel  # the planner's two-tone panel is its own decision: only the ground under it is the look's
         plan.background = ground_background(effective, brand)
+        plan.background.panel = panel
     plan.type_style = effective.type_style
 
-    # ---- imagery: art looks carry no cutout; cutout looks keep it ----
+    # ---- imagery: an art look keeps a cutout (the art is the setting, the cutout the subject); plain looks tune the hero's light ----
     if effective.imagery == "art":
-        drop = {c.id for c in _walk(plan.components) if _is_generated_image(c, generated_heroes)}
-        if drop:
-            plan.components = [c for c in plan.components if c.id not in drop]
-            used = {c.content.get("asset") for c in _walk(plan.components)}
-            plan.generated_assets = [a for a in plan.generated_assets if a.id in used]
-            notes.append("cutout dropped: the art is the image of this look")
+        pass
     else:
         for a in plan.generated_assets:  # the hero keeps its natural colours; only the LIGHT is matched to this ground
             if "natural colours" not in a.subject:
                 a.subject = (a.subject.rstrip(". ") + ", true natural colours, soft diffuse daylight from the upper left, matte finish, "
                              "minimal reflections, calm and understated")
-
-    # ---- a header or logo strip is placed inside the safe margins, never as a full-bleed edge band ----
-    for c in plan.components:
-        if c.component in ("HeaderRow", "LogoBlock", "LogoStrip") and c.anchor != "flow":
-            c.anchor = "flow"
-            notes.append(f"{c.id}: a header / logo strip is placed inside the margins (anchor set to flow)")
-
-    # ---- the header is the full logo alone; its date / time / venue lines belong to the footer ----
-    for i, c in enumerate(plan.components):
-        if c.component == "HeaderRow" and c.anchor == "flow":
-            lines = [t for t in c.content.get("lines", []) if t]
-            logo = {k: v for k, v in (("logo", c.content.get("logo")), ("width_pct", c.content.get("logo_pct")),
-                                      ("band", c.content.get("band"))) if v}
-            plan.components[i] = ComponentSpec(id=c.id, component="LogoBlock", emphasis=c.emphasis, content=logo)
-            if lines:
-                foot = next((f for f in plan.components if f.component == "InfoBar" and f.anchor == "bottom"), None)
-                if foot is None:
-                    foot = ComponentSpec(id="footer", component="InfoBar", variant="footer", anchor="bottom", emphasis="secondary",
-                                         content={"items": []})
-                    plan.components.append(foot)
-                foot.content["items"] = lines + [t for t in foot.content.get("items", []) if t not in lines]
-                notes.append("date / time / venue moved from the header to the footer")
-            break
-
-    # ---- one standard footer on every poster ----
-    for c in plan.components:
-        if c.component == "InfoBar" and c.anchor == "bottom" and c.variant in ("band", "footer"):
-            c.variant = "footer"
-            c.content["fill"], c.content["text_color"] = "primary", "surface"
-            c.content.pop("fill_to", None)
 
     # ---- ornament dividers and edge stripes are not part of the institution's look ----
     before = len(plan.components)
@@ -172,32 +135,5 @@ def apply_look(plan: PlanOutput, brand: BrandProfile, look: Look) -> list[str]:
         notes.append("decorative stripes removed (only a border or frame is kept)")
     plan.decorations = kept
 
-    # ---- text colours follow the ground ----
-    dark = effective.dark
-    for c in _walk(plan.components):
-        if c.anchor != "flow":
-            continue
-        for key in COLOR_KEYS.get(c.component, []):
-            v = c.content.get(key)
-            if v is None:
-                continue
-            if dark and v in LIGHT_ON_DARK:
-                c.content[key] = "surface"
-            elif not dark and v in DARK_ON_LIGHT:
-                c.content[key] = "primary" if key != "subtitle_color" else "text"
-        if c.component == "TitleStack":
-            c.content.setdefault("title_color", "surface" if dark else "primary")
-            c.content.setdefault("subtitle_color", "surface" if dark else "text")
-            if len((c.content.get("title") or "").split()) >= 2:  # a title treatment is part of the look, never optional
-                c.content["title_style"] = effective.title_style
-                if effective.title_style == "accent_last" and not dark:
-                    c.content["title_style"] = "weight_split"
-
-    # ---- header: on art, the header strip sits on a brand band the logo merges into ----
-    flow = [c for c in plan.components if c.anchor == "flow"]
-    if effective.header_band and flow and flow[0].component in ("HeaderRow", "LogoBlock", "LogoStrip"):
-        flow[0].content["band"] = effective.header_band
-        if flow[0].component == "HeaderRow":
-            flow[0].content["color"] = "surface"
     notes.append(f"look {effective.name}: {effective.about}")
     return notes

@@ -73,6 +73,102 @@ def tokens(text: str) -> list[str]:
     return re.findall(r"\w+", normalize(text))
 
 
+DEVICES = {"two_tone_ground", "pull_quote", "keyline_frame", "big_type", "hero_image", "art_ground"}  # what a concept may claim to use
+
+
+def concept_errors(plan: PlanOutput) -> list[str]:
+    """The concept is a commitment: it must be complete and the plan must actually do what it says (focal point is the hero, the devices
+    it names are present, and a device present in the plan is named)."""
+    c, errs = plan.concept, []
+    comps = {x.id: x for x in walk(plan.components)}
+    if c is None:
+        return ["concept is missing: decide the idea, focal_point, reading_order, devices and contrast BEFORE the components"]
+    if not c.idea.strip() or not c.contrast.strip():
+        errs.append("concept.idea and concept.contrast must each be one real sentence")
+    if c.focal_point not in comps:
+        errs.append(f"concept.focal_point {c.focal_point!r} is not a component id")
+    elif comps[c.focal_point].emphasis != "hero":
+        errs.append(f"concept.focal_point {c.focal_point!r} must have emphasis 'hero' (the eye lands on the hero)")
+    missing = [i for i in c.reading_order if i not in comps]
+    if missing or c.focal_point not in c.reading_order or len(c.reading_order) < 2:
+        errs.append(f"concept.reading_order must list at least two existing component ids including the focal point (unknown: {missing})")
+    if plan.background.kind == "generated" and plan.background.art is not None:
+        a = plan.background.art
+        empty = [k for k in ("subject", "composition", "devices", "color_roles") if not getattr(a, k).strip()]
+        if empty:
+            errs.append(f"background.art needs the art director's fields {empty}: subject (what and where in the frame), composition (camera "
+                        "angle, depth layers, where the quiet space is), devices (curved horizon, diagonal light beam, layered shapes...), "
+                        "color_roles (dominant colour, accent, light direction)")
+    bad = [d for d in c.devices if d not in DEVICES]
+    if bad or not c.devices:
+        errs.append(f"concept.devices must be a non-empty subset of {sorted(DEVICES)} (got {c.devices})")
+    has = {"two_tone_ground": plan.background.panel is not None, "pull_quote": any(x.component == "PullQuote" for x in comps.values()),
+           "keyline_frame": any(d.kind in ("frame", "border") for d in plan.decorations),
+           "hero_image": any(x.component in IMAGE_COMPONENTS for x in comps.values()), "art_ground": plan.background.kind == "generated",
+           "big_type": any(x.component in ("BigTitle", "BigWord") or (x.component == "TitleStack" and x.variant == "display") for x in comps.values())}
+    for d in c.devices:
+        if d in has and not has[d]:
+            how = {"two_tone_ground": 'set background.panel {"color": <palette name>, "starts_at": <flow component id>}',
+                   "pull_quote": "add a PullQuote component", "keyline_frame": 'add a decoration of kind "frame" or "border"',
+                   "hero_image": "add a HeroImage / BottomCutout / PhotoFade / ImageBlock", "art_ground": 'set background.kind "generated" with art',
+                   "big_type": "use a BigTitle / BigWord / display TitleStack"}[d]
+            errs.append(f"concept names the device {d!r} but the plan does not use it: either {how}, or remove {d!r} from concept.devices")
+    for d in ("two_tone_ground", "pull_quote"):
+        if has[d] and d not in c.devices:
+            errs.append(f"the plan uses {d!r}: name it in concept.devices")
+    return errs
+
+
+PANEL_MIN_CONTRAST = 2.5  # the panel block against the ground above it
+
+
+def panel_errors(plan: PlanOutput, brand: BrandProfile) -> list[str]:
+    p = plan.background.panel
+    if p is None:
+        return []
+    errs = []
+    flow_ids = {c.id for c in plan.components if c.anchor == "flow"}
+    if plan.background.kind == "generated":
+        errs.append("background.panel (two-tone ground) is for solid / gradient grounds, not generated art")
+    if p.starts_at not in flow_ids:
+        errs.append(f"background.panel.starts_at {p.starts_at!r} must be the id of a flow component (the block begins just above it)")
+    if p.color not in valid_color_names(brand) and not HEX.match(p.color):
+        errs.append(f"background.panel.color {p.color!r} is not a palette name or #rrggbb")
+    banned = set(brand.forbidden_grounds) | {brand.palette[n].lower() for n in brand.forbidden_grounds if n in brand.palette}
+    if p.color.lower() in banned:
+        errs.append(f"background.panel.color {p.color!r} is not allowed as a ground for {brand.short_name} (brand rule)")
+    if not errs:  # a two-tone ground must read as two tones: the block clearly lighter or darker than the ground above it
+        from poster_agent.checks.pixels import hex_rgb, rel_luminance
+        from poster_agent.layout.base import resolve_color
+        lum = lambda c: rel_luminance(hex_rgb(resolve_color(brand, c)))
+        stops = [s.color for s in plan.background.gradient] if plan.background.kind == "gradient" and plan.background.gradient else [plan.background.color]
+        pl = lum(p.color)
+        worst = min((max(pl, lum(c)) + 0.05) / (min(pl, lum(c)) + 0.05) for c in stops)
+        if worst < PANEL_MIN_CONTRAST:
+            errs.append(f"background.panel.color {p.color!r} is too close in tone to the ground (contrast {worst:.1f}:1, needs {PANEL_MIN_CONTRAST}:1): "
+                        "a two-tone ground needs a clearly lighter or darker block, e.g. a dark brand block under a light ground, or a light "
+                        "'surface' block under a dark one (with dark text on it); otherwise drop the device")
+    return errs
+
+
+_STOP = {"with", "from", "that", "this", "where", "department", "college", "technology", "engineering", "institute", "annual", "event",
+         "day", "2026", "2027", "2025", "meet", "world", "future", "learn", "join", "professional", "institutional", "still", "would",
+         "navy", "blue", "deep", "dark", "light", "atmosphere", "gradient", "striking", "hero", "visual", "energetic", "futuristic",
+         "over", "suit", "clean", "modern", "background", "style", "image"}  # mood and colour words are not a subject
+
+
+def _stems(text: str) -> set[str]:
+    return {w[:5] for w in re.findall(r"[a-z]{4,}", (text or "").lower()) if w not in _STOP}
+
+
+def art_is_relevant(description: str, brief: Brief) -> bool:
+    """True when the art description shares a subject word (first five letters, so robot / robotics match) with the brief's title,
+    subtitle, tagline or style notes. If the brief has no such words, nothing can be checked and it passes."""
+    source = _stems(" ".join(filter(None, [brief.event_title, getattr(brief, "subtitle", None), getattr(brief, "tagline", None),
+                                           getattr(brief, "style_notes", None)])))
+    return not source or bool(source & _stems(description))
+
+
 def validate_plan(plan: PlanOutput, brief: Brief, brand: BrandProfile, inventory: dict[str, InventoryItem]) -> list[str]:
     errs: list[str] = []
     from poster_agent.layout.zones import TEMPLATES
@@ -91,11 +187,6 @@ def validate_plan(plan: PlanOutput, brief: Brief, brand: BrandProfile, inventory
             errs.append(f"this brief has little text ({words} words) and the plan has no image, so the poster would be mostly empty: add ONE "
                         "image as the bottom anchor, a BottomCutout of an object related to the event (declare it in generated_assets), or a "
                         "supplied photo (PhotoFade / ImageBlock)")
-        generated_ids = {a.id for a in plan.generated_assets}
-        if plan.background.kind == "generated" and any(
-                c.component in ("HeroImage", "BottomCutout") and c.content.get("asset") in generated_ids for c in walk(plan.components)):
-            errs.append("one image idea per poster: generated background art OR a generated cutout, never both (the cutout would clash "
-                        "with the art); use a plain ground with the cutout, or the art without a cutout")
         if plan.template in ("house", "split", "photo_led") and not any(
                 c.anchor == "bottom" and c.component in ANCHORS_AT_BOTTOM for c in plan.components):
             errs.append(f"the {plan.template} skeleton ends with an anchor at the bottom edge: a BottomCutout (generated object or "
@@ -146,6 +237,7 @@ def validate_plan(plan: PlanOutput, brief: Brief, brand: BrandProfile, inventory
     plan_tokens: list[str] = []
     used_assets: set[str] = set()
     all_components = list(walk(plan.components))
+    errs += panel_errors(plan, brand)
 
     gen_ids = {g.id for g in plan.generated_assets}
     for g in plan.generated_assets:
@@ -161,12 +253,16 @@ def validate_plan(plan: PlanOutput, brief: Brief, brand: BrandProfile, inventory
         if bg.art is None:
             errs.append("background kind 'generated' needs background.art")
         else:
-            texts = [bg.art.description, bg.art.style, bg.art.lighting, bg.art.medium]
+            texts = [bg.art.description, bg.art.style, bg.art.lighting, bg.art.medium, bg.art.subject, bg.art.composition, bg.art.devices,
+                     bg.art.color_roles]
             for bad in sorted({m.group(0).lower() for t in texts for m in FORBIDDEN_ART.finditer(t)}):
                 errs.append(f"background.art mentions {bad!r}; describe imagery and atmosphere only "
                             "(no text, logos or people)")
             if any(QUOTES.search(t) for t in texts):
                 errs.append("background.art must not contain quotation marks")
+            if brief is not None and not art_is_relevant(texts[0], brief):
+                errs.append("background.art.description is generic: depict the event's own subject, using nouns from the brief's title, "
+                            "subtitle, tagline or style notes (a concrete scene or objects, not an abstract atmosphere)")
             for pc in bg.art.palette:
                 if pc not in colors and not HEX.match(pc):
                     errs.append(f"background.art.palette colour {pc!r} is not a palette name or #rrggbb")
@@ -216,6 +312,9 @@ def validate_plan(plan: PlanOutput, brief: Brief, brand: BrandProfile, inventory
                     errs.append(f"{where}: {ch.component} {ch.id!r} is the poster's graphic; it does not go inside a Panel")
         if c.component == "IconRow":
             from poster_agent.layout.structure import icon_names
+            from poster_agent.plan.prompt import wants_icon_row
+            if brief is not None and not wants_icon_row(brief):
+                errs.append(f"{where}: this poster has no icon row; set the list lines as Columns or a TextBlock")
             known = set(icon_names())
             for it in c.content.get("items") or []:
                 if not isinstance(it, dict) or not it.get("label"):

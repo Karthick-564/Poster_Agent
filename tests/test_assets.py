@@ -100,7 +100,7 @@ def test_generated_background_needs_clean_art(setup):
     assert any("needs background.art" in e for e in errs(p, setup))
     p["background"]["art"] = {"description": "glass panels with the word welcome in neon", "tone": "dark"}
     assert any("'word'" in e for e in errs(p, setup))
-    p["background"]["art"] = {"description": "translucent navy glass panels with soft gradients", "tone": "light",
+    p["background"]["art"] = {"description": "translucent navy glass panels with soft gradients for a launch", "tone": "light",
                               "palette": ["primary", "#ff00zz"]}
     assert any("#ff00zz" in e for e in errs(p, setup))
     p["background"]["art"]["palette"] = ["primary", "accent"]
@@ -307,3 +307,13 @@ def test_a_hard_straight_seam_rejects_a_background_but_not_a_soft_gradient():
     assert "seam" in art_problem(Image.fromarray(seam), backdrop=True)
     assert art_problem(Image.fromarray(soft), backdrop=True) is None
     assert art_problem(Image.fromarray(seam)) is None  # only backdrops are held to this (objects have edges)
+
+
+def test_art_with_invented_non_latin_lettering_is_rejected(monkeypatch):
+    from poster_agent.assets import generate
+    from poster_agent.checks.ocr import OcrLine
+    img = Image.effect_noise((256, 256), 40).convert("RGB")
+    monkeypatch.setattr(generate, "read_lines", lambda im: [OcrLine("世昳歆个糊", 0.7, 0, 0, 10, 10)])
+    assert "text found" in (generate.art_problem(img) or "")
+    monkeypatch.setattr(generate, "read_lines", lambda im: [OcrLine("世", 0.7, 0, 0, 10, 10)])  # one stray glyph is noise
+    assert generate.art_problem(img) is None

@@ -28,7 +28,7 @@ from .comfy import ComfyClient
 from .matting import alpha_coverage, cutout
 from .prompts import (ArtDirection, CalmLayout, caption_text, flux_prompt, ideogram_prompt, qwen_subject_prompt,
                       validate_ideogram_caption)
-from .workflows import flux_workflow, ideogram_workflow, qwen_workflow, round16
+from .workflows import QWEN_BG_NEGATIVE, flux_workflow, ideogram_workflow, qwen_workflow, round16
 
 TARGET_MEGAPIXELS = 1.05  # Ideogram renders ~1 MP; the compiler scales it to the canvas
 ASPECT_SIZES = {"1:1": (1024, 1024), "4:5": (896, 1120), "3:4": (864, 1152), "16:9": (1280, 720), "9:16": (720, 1280)}
@@ -106,6 +106,14 @@ def seam_coverage(img: Image.Image) -> tuple[float, int, int]:
     return best
 
 
+FOREIGN_CONF = 0.5  # lettering in any other script (diffusion models invent CJK-like glyphs) is rejected at a lower bar than Latin text
+
+
+def _foreign_lettering(text: str) -> bool:
+    """Two or more non-ASCII letters: glyphs of another script. Generated art has no text in any script, so these are never legitimate."""
+    return sum(not c.isascii() for c in alnum(text)) >= 2
+
+
 def art_problem(img: Image.Image, backdrop: bool = False) -> str | None:
     """Why this generated image must not be used, or None. Art may not contain text: refusal banners (even garbled) and
     confidently-read lettering both count; low-confidence OCR noise on busy patterns does not. A `backdrop` (full-poster
@@ -119,6 +127,8 @@ def art_problem(img: Image.Image, backdrop: bool = False) -> str | None:
     hits = []
     for ln in read_lines(img):
         if not verifiable(ln.text):
+            if ln.conf >= FOREIGN_CONF and _foreign_lettering(ln.text):
+                hits.append(ln)
             continue
         if (ln.conf >= 0.4 and _is_refusal(ln.text)) or (ln.conf >= TEXT_CONF and len(alnum(ln.text)) >= 4):
             hits.append(ln)
@@ -128,9 +138,13 @@ def art_problem(img: Image.Image, backdrop: bool = False) -> str | None:
 
 
 class AssetGenerator:
-    def __init__(self, comfy: ComfyClient, out_dir: Path, cache_dir: Path | None = None, background_backend: str = "flux"):
+    def __init__(self, comfy: ComfyClient, out_dir: Path, cache_dir: Path | None = None, background_backend: str | None = None):
+        import os
+        from dotenv import dotenv_values
         self.comfy = comfy
-        self.background_backend = background_backend
+        # which model paints backgrounds: flux (default) | qwen | ideogram; BACKGROUND_BACKEND in the environment or .env switches it
+        self.background_backend = (background_backend or os.environ.get("BACKGROUND_BACKEND")
+                                   or dotenv_values(ROOT / ".env").get("BACKGROUND_BACKEND") or "flux")
         self.out_dir = Path(out_dir)
         self.cache = Path(cache_dir or ROOT / "data/cache/gen")
         self.out_dir.mkdir(parents=True, exist_ok=True)
@@ -185,7 +199,7 @@ class AssetGenerator:
     def background(self, asset_id: str, art: ArtDirection, canvas: CanvasSpec, calm: CalmLayout | str, *, seed: int | None = None,
                    preset: str = "default", seed_offset: int = 0, attempts: int = ATTEMPTS,
                    backend: str | None = None) -> tuple[AssetRef, GenInfo]:
-        """A text-free atmospheric background. backend 'flux' (default: reliable, ~12 s) or 'ideogram' (strict JSON caption,
+        """A text-free atmospheric background. backend 'flux' (default: reliable, ~12 s), 'qwen' (~45 s, keeps requested areas calm) or 'ideogram' (strict JSON caption,
         prone to false 'blocked by safety filter' on abstract scenes in this setup)."""
         backend = backend or self.background_backend
         w, h = bg_size(canvas)
@@ -197,6 +211,14 @@ class AssetGenerator:
 
             def make(s: int):
                 return flux_workflow(prompt_text, w, h, s, prefix=f"bg_{asset_id}")
+        elif backend == "qwen":  # listens to "leave this area calm" and draws no lettering (measured: scripts/model_compare.py)
+            prompt_text = flux_prompt(art, calm)
+            model_label, model_key = "qwen_image_2.1", "qwen21"
+            record = prompt_text
+            salt = prompt_text
+
+            def make(s: int):
+                return qwen_workflow(prompt_text, w, h, s, negative=QWEN_BG_NEGATIVE, prefix=f"bg_{asset_id}")
         elif backend == "ideogram":
             prompt = ideogram_prompt(art, calm)
             off_schema = validate_ideogram_caption(prompt)

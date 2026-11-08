@@ -25,7 +25,7 @@ from poster_agent.spec.brand import ROOT, BrandProfile
 from .prompt import SYSTEM, build_user_prompt
 from .looks import apply_look, look_for
 from .schema import PlanGeneratedAsset, PlanOutput
-from .validate import component_assets, validate_plan, walk
+from .validate import component_assets, concept_errors, validate_plan, walk
 
 
 @dataclass
@@ -107,6 +107,8 @@ def build_spec(plan: PlanOutput, brief: Brief, brand: BrandProfile, inventory: d
             GradientStop(offset=s.offset, color=resolve_color(brand, s.color)) for s in bg.gradient])
     else:
         background = BackgroundSpec(kind="solid", color=resolve_color(brand, bg.color))
+    if bg.panel is not None and background.kind in ("solid", "gradient"):
+        background.panel = {"color": resolve_color(brand, bg.panel.color), "starts_at": bg.panel.starts_at}
     components = list(plan.components)
     used: set[str] = set()
     for c in walk(components):
@@ -181,7 +183,7 @@ def plan_poster(brief: Brief, brand: BrandProfile, inventory: dict[str, Inventor
             previous = raw
             continue
 
-        errs = validate_plan(plan, brief, brand, inventory)
+        errs = validate_plan(plan, brief, brand, inventory) + concept_errors(plan)
         if errs:
             problems, previous = errs, raw
             rounds.append(RoundLog(r, "validate", errs, used_llm))

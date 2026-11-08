@@ -14,11 +14,13 @@ import shutil
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
-from poster_agent.analysis import analyse
+from PIL import Image
+
+from poster_agent.analysis import CALM_DETAIL, analyse, analyse_image, text_detail
 from poster_agent.assets import ArtDirection, AssetGenerator, ComfyClient, GenInfo, calm_layout
 from poster_agent.assets.cutouts import apply_cutouts
 from poster_agent.assets.person import apply_framing
-from poster_agent.assets.treatments import apply_treatments, calm_background
+from poster_agent.assets.treatments import apply_treatments, calm_under_text
 from poster_agent.checks import CheckReport, run_checks
 from poster_agent.compile.compiler import CompileResult, compile_spec
 from poster_agent.compile.vc_client import VectorCraftSession, WatchConfig
@@ -28,13 +30,13 @@ from poster_agent.ingest import Brief, InventoryItem
 from poster_agent.layout.adapt import adapt_to_background
 from poster_agent.layout.base import resolve_color
 from poster_agent.layout.candidates import apply_choice, choose_layout
-from poster_agent.layout.solver import apply_layout
+from poster_agent.layout.solver import apply_layout, solve_layout
 from poster_agent.llm import LLM
 from poster_agent.plan import PlanResult, plan_poster
 from poster_agent.plan.schema import PlanGeneratedAsset, PlanOutput
 from poster_agent.repairs import repair_contrast
 from poster_agent.router import feedback_lines, has_generated_art, implicated_assets, route
-from poster_agent.spec import AssetKind, AssetRef, BackgroundSpec, Box, Issue, IssueCategory, PosterSpec
+from poster_agent.spec import AssetKind, AssetRef, BackgroundSpec, Box, ElementKind, Issue, IssueCategory, PosterSpec
 from poster_agent.spec.brand import ROOT, BrandProfile
 
 
@@ -114,6 +116,10 @@ def _write_report(r: RunResult) -> None:
     (r.run_dir / "report.json").write_text(json.dumps(_report(r), indent=1, ensure_ascii=False), encoding="utf-8")
 
 
+BACKGROUND_CANDIDATES = 5  # at most this many pictures per background; generation stops early at the first one calm enough under the text
+DETAIL_WEIGHT = 20.0  # placement cost + this x the fine detail under the text decides between pictures
+
+
 def _realize_background(spec: PosterSpec, plan: PlanOutput, gen: AssetGenerator | None, brand: BrandProfile, offset: int,
                         infos: list[GenInfo], notes: list[str]) -> None:
     bg = plan.background
@@ -125,20 +131,68 @@ def _realize_background(spec: PosterSpec, plan: PlanOutput, gen: AssetGenerator 
             notes.append(msg)
         return
     art = ArtDirection(description=bg.art.description, style=bg.art.style, lighting=bg.art.lighting, medium=bg.art.medium,
-                       tone=bg.art.tone, palette=[resolve_color(brand, c) for c in bg.art.palette])
-    calm = calm_layout(spec.placed, spec.canvas.width, spec.canvas.height)
+                       tone=bg.art.tone, palette=[resolve_color(brand, c) for c in bg.art.palette], subject=bg.art.subject,
+                       composition=bg.art.composition, devices=bg.art.devices, color_roles=bg.art.color_roles)
+    calm = calm_layout(spec.placed, spec.canvas.width, spec.canvas.height)  # text first: the art prompt says where the quiet space must be
     try:
-        ref, info = gen.background("background", art, spec.canvas, calm, seed_offset=offset)
-        infos.append(info)
-        note = calm_background(ROOT / ref.path, brand, art.tone)  # a backdrop, not the subject: toned down so type can sit on it
-        if note not in notes:
-            notes.append(note)
+        best: tuple[float, AssetRef, GenInfo, int] | None = None
+        costs: list[float] = []
+        details: list[float] = []
+        for k in range(BACKGROUND_CANDIDATES):  # then several pictures; keep the one the text fits best (measured, not judged by eye)
+            ref_k, info_k = gen.background(f"background_{k}", art, spec.canvas, calm, seed_offset=offset + 101 * k)
+            infos.append(info_k)
+            with Image.open(ROOT / ref_k.path) as im:
+                art_map = analyse_image(im, spec.canvas.width, spec.canvas.height)
+            ch = choose_layout(spec, brand, art_map)
+            cost, detail = (ch.chosen.cost if ch is not None else 0.0), 0.0
+            if ch is not None:  # how detailed is this picture under the text, once the text has moved to its best place on it?
+                sp = spec.model_copy(update={"flow_region": ch.chosen.region, "flow_valign": ch.chosen.valign})
+                boxes = [e.box for e in solve_layout(sp, brand).placed if e.kind == ElementKind.text and not e.props.get("decorative")]
+                with Image.open(ROOT / ref_k.path) as im:
+                    detail = text_detail(im, boxes, spec.canvas.width, spec.canvas.height)
+            cost += DETAIL_WEIGHT * detail
+            details.append(detail)
+            costs.append(cost)
+            if best is None or cost < best[0]:
+                best = (cost, ref_k, info_k, k)
+            if detail <= CALM_DETAIL:
+                break  # calm enough under the text: no need to spend more GPU time
+        _, ref, info, k_won = best
+        ref = ref.model_copy(update={"id": "background"})  # the kept picture keeps the id the rest of the pipeline refers to
+        notes.append(f"background: kept candidate {k_won} of {len(costs)} generated (max {BACKGROUND_CANDIDATES}); placement cost + detail under "
+                     f"the text: {', '.join(f'{c:.2f}' for c in costs)}; detail under the text: {', '.join(f'{d:.3f}' for d in details)}")
         spec.assets[ref.id] = ref
         spec.background = BackgroundSpec(kind="generated", asset_id=ref.id, color=spec.background.color)
     except Exception as e:  # honest fallback: keep the solid ground and record it
         msg = f"generated background failed ({str(e)[:200]}); solid ground used instead"
         notes.append(msg)
         spec.issues.append(Issue(category=IssueCategory.bg_clash, severity="warning", evidence=msg, source="check"))
+
+
+def _calm_under_text(spec: PosterSpec, brand: BrandProfile, tone: str, rdir: Path, notes: list[str]) -> None:
+    """After the text is placed: if the picture is still detailed under it, soften only those areas (feathered blur + brand-tint wash).
+    The untouched picture stays on disk; the spec points at the softened copy. Says what was measured before and after."""
+    ref = spec.assets.get(spec.background.asset_id or "")
+    if spec.background.kind != "generated" or ref is None:
+        return
+    boxes = [e.box for e in spec.placed if e.kind == ElementKind.text and not e.props.get("decorative")]
+    if not boxes:
+        return
+    with Image.open(ROOT / ref.path) as im:
+        out, info = calm_under_text(im, boxes, spec.canvas.width, spec.canvas.height,
+                                    resolve_color(brand, "primary" if tone == "dark" else "surface"), CALM_DETAIL)
+    if info["passes"] == 0:
+        msg = f"art under the text is already calm (detail {info['before']:.3f}, target {info['target']:.3f}); left as generated"
+    else:
+        dest = rdir / "assets" / "background_calm.png"
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        out.save(dest)
+        spec.assets[ref.id] = ref.model_copy(update={"path": dest.resolve().relative_to(ROOT).as_posix(),
+                                                      "treatment": {**ref.treatment, "calm_under_text": info, "source": ref.path}})
+        msg = (f"art softened under the text only ({info['passes']} pass(es)): detail {info['before']:.3f} -> {info['after']:.3f} "
+               f"(target {info['target']:.3f}); the rest of the picture is untouched")
+    if msg not in notes:
+        notes.append(msg)
 
 
 async def make_poster_async(brief: Brief, brand: BrandProfile, inventory: dict[str, InventoryItem], llm: LLM, run_dir: Path, *,
@@ -200,12 +254,14 @@ async def make_poster_async(brief: Brief, brand: BrandProfile, inventory: dict[s
             result.notes += [n for n in apply_cutouts(spec, rdir / "assets") if n not in result.notes]  # then matte supplied cutout photos
             result.notes += [n for n in apply_treatments(spec, brand, rdir / "assets") if n not in result.notes]
             art_map = analyse(spec, ROOT)  # look at the art first, then decide where the text goes
-            choice = choose_layout(spec, brand, art_map) if art_map is not None and spec.template == "classic" else None
+            choice = choose_layout(spec, brand, art_map) if art_map is not None else None  # every template: the text follows the art
             if choice is not None:
                 apply_choice(spec, choice)
                 apply_layout(spec, brand)
                 if choice.note() not in result.notes:
                     result.notes.append(choice.note())
+            if plan_out.background.kind == "generated" and plan_out.background.art is not None:
+                _calm_under_text(spec, brand, plan_out.background.art.tone, rdir, result.notes)  # last resort: soften the art under the text only
             result.notes += [f"text adapted to the background: {n}" for n in adapt_to_background(spec, brand, ROOT)
                              if f"text adapted to the background: {n}" not in result.notes]
             compiled = await compile_spec(spec, vc, rdir, name=name, watched=watch is not None,
@@ -315,6 +371,7 @@ async def make_poster_async(brief: Brief, brand: BrandProfile, inventory: dict[s
 
     best = min(result.rounds, key=lambda r: r.key)
     result.best_round = best.n
+    (run_dir / "plan.json").write_text(json.dumps(best_plan[1], indent=1, ensure_ascii=False), encoding="utf-8")  # the plan of the KEPT poster
     result.spec = PosterSpec.model_validate_json(best.spec_json)
     result.checks, result.critic = best.checks, best.critic
     result.passed = best.passed

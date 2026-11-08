@@ -128,6 +128,7 @@ class BackgroundSpec(BaseModel):
     gradient: list[GradientStop] = Field(default_factory=list)
     angle: float = 90.0
     asset_id: str | None = None
+    panel: dict[str, str] | None = None  # two-tone ground: {"color": "#hex", "starts_at": component id}; placed by the solver
     scrims: list[ScrimSpec] = Field(default_factory=list)
     # Zones the layout needs kept calm when the background is generated (fed to the image prompt).
     keep_clear: list[Box] = Field(default_factory=list)

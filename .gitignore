@@ -30,6 +30,8 @@
 
 # --- inside eval/: the fictional evaluation briefs are shared; results (posters, logs) stay local
 /eval/results/
+/eval/reference/
+/eval/stage1/
 
 # --- inside the package / tests: material built from real institution posters or real events stays local
 /poster_agent/fixtures/

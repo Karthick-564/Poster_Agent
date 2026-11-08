@@ -31,36 +31,23 @@ def test_looks_differ_by_brief_but_are_stable_for_the_same_brief():
     assert look_for(Brief(brand="kct", event_title="X", look="dark_art")).name == "dark_art"
 
 
-def test_a_cutout_look_gets_a_plain_ground_and_drops_the_art_so_there_is_one_image_idea():
-    p = plan(art=True, hero=True)
+def test_a_cutout_look_gets_a_plain_ground_and_drops_the_art_when_there_is_no_cutout():
+    p = plan(art=True, hero=False)
     notes = apply_look(p, KCT, LOOKS["clean_light"])
     assert p.background.kind == "gradient" and p.background.gradient[-1].color == "#ffffff" and p.look == "clean_light"  # a soft ground, not flat
-    assert any("background art dropped" in n for n in notes) and any(c.component == "BottomCutout" for c in p.components)
-    assert "matte" in p.generated_assets[0].subject  # the hero is prompted to sit on this ground
+    assert any("background art dropped" in n for n in notes)
 
 
-def test_an_art_look_drops_the_cutout_and_puts_the_header_on_a_brand_band():
+def test_art_and_a_cutout_together_keep_the_art_as_the_ground():
     p = plan(art=True, hero=True)
-    apply_look(p, KCT, LOOKS["dark_art"])
-    assert p.background.kind == "generated" and not p.generated_assets and not any(c.component == "BottomCutout" for c in p.components)
-    hdr = p.components[0]
-    assert hdr.component == "LogoBlock" and hdr.content["band"] == "primary"
+    apply_look(p, KCT, LOOKS["clean_light"])
+    assert p.look == "dark_art" and p.background.kind == "generated" and any(c.component == "BottomCutout" for c in p.components)
 
 
 def test_an_art_look_without_art_falls_back_to_a_plain_look():
     p = plan(art=False)
     apply_look(p, KCT, LOOKS["dark_art"])
     assert p.look == "brand_blue" and p.background.kind == "gradient" and p.background.gradient[0].color == KCT.palette["primary"]
-
-
-def test_the_title_treatment_and_text_colours_follow_the_look():
-    dark, light = plan(art=False), plan(art=False)
-    apply_look(dark, KCT, LOOKS["brand_blue"])
-    apply_look(light, KCT, LOOKS["tint_soft"])
-    td, tl = dark.components[1].content, light.components[1].content
-    assert td["title_style"] == "accent_last" and td["title_color"] == "surface"
-    assert tl["title_style"] == "highlight_last" and tl["title_color"] == "primary"
-    assert light.background.gradient[0].color == tint_hex(KCT) and min(int(tint_hex(KCT)[i:i + 2], 16) for i in (1, 3, 5)) >= 0xe0  # a very light wash
 
 
 def test_a_one_line_title_can_carry_a_treatment_and_keeps_its_words():
@@ -143,26 +130,6 @@ def test_a_sparse_brief_on_a_plain_look_must_have_an_image_but_a_text_heavy_one_
     assert not any("little text" in e for e in validate_plan(p2, sparse, KCT, {}))
 
 
-def test_a_header_anchored_to_the_edge_is_moved_inside_the_margins():
-    p = plan(art=False, hero=False)
-    p.components[0].anchor = "top"
-    apply_look(p, KCT, LOOKS["clean_light"])
-    assert p.components[0].anchor == "flow"
-    comps = [c.model_copy(update={"anchor": "flow"}) for c in p.components]
-    res = solve_layout(PosterSpec(brief_id="t", brand="kct", canvas=CanvasSpec.from_format("story"), components=comps), KCT)
-    logo = next(e for e in res.placed if e.role == "logo")
-    assert logo.box.x >= CanvasSpec.from_format("story").safe_box.x - 1 and logo.box.y >= CanvasSpec.from_format("story").safe_box.y - 1
-
-
-def test_every_bottom_band_becomes_the_one_standard_footer():
-    p = plan(art=False, hero=False)
-    p.components.append(ComponentSpec(id="f", component="InfoBar", variant="band", anchor="bottom",
-                                      content={"items": ["a@b.edu"], "fill": "surface", "text_color": "text", "fill_to": "accent"}))
-    apply_look(p, KCT, LOOKS["clean_light"])
-    f = p.components[-1]
-    assert f.variant == "footer" and f.content["fill"] == "primary" and f.content["text_color"] == "surface" and "fill_to" not in f.content
-
-
 def test_the_footer_has_one_text_size_whatever_the_number_of_lines_and_columns_for_several():
     def footer(items):
         c = ComponentSpec(id="f", component="InfoBar", variant="footer", anchor="bottom", content={"items": items})
@@ -196,18 +163,6 @@ def test_a_supplied_person_stands_in_front_of_a_stage_arch_that_runs_behind_the_
     assert not any(e.id == "a.stage" for e in res.placed)  # a generated object needs no stage
 
 
-def test_the_header_is_the_logo_alone_and_its_date_time_venue_move_to_the_footer():
-    p = plan(art=False, hero=False)
-    apply_look(p, KCT, LOOKS["clean_light"])
-    assert p.components[0].component == "LogoBlock" and "lines" not in p.components[0].content
-    foot = next(c for c in p.components if c.component == "InfoBar")
-    assert foot.anchor == "bottom" and foot.variant == "footer" and foot.content["items"][0] == "1 MARCH 2027"
-    p2 = plan(art=False, hero=False)
-    p2.components.append(ComponentSpec(id="f", component="InfoBar", variant="band", anchor="bottom", content={"items": ["a@b.edu"]}))
-    apply_look(p2, KCT, LOOKS["clean_light"])
-    assert next(c for c in p2.components if c.component == "InfoBar").content["items"] == ["1 MARCH 2027", "a@b.edu"]  # facts first, contacts after
-
-
 def test_a_guest_photo_is_a_face_in_a_circle_by_default():
     from tests.test_skeleton import cutout_asset
     from poster_agent.spec import AssetKind, AssetRef
@@ -217,3 +172,29 @@ def test_a_guest_photo_is_a_face_in_a_circle_by_default():
     res = solve_layout(PosterSpec(brief_id="t", brand="kct", canvas=CanvasSpec.from_format("story"), components=[c], assets={"g1": a}), KCT)
     photo = next(e for e in res.placed if e.id == "g.photo")
     assert photo.props["framing"] == "face" and photo.props["crop"] == "circle"
+
+
+def test_an_art_look_keeps_the_cutout():
+    p = plan(art=True, hero=True)
+    apply_look(p, KCT, LOOKS["dark_art"])
+    assert p.background.kind == "generated" and p.generated_assets and any(c.component == "BottomCutout" for c in p.components)
+
+
+def test_a_look_sets_only_ground_and_type_style_and_leaves_the_planners_header_footer_and_colours_alone():
+    p = plan(art=False, hero=False)
+    p.components.append(ComponentSpec(id="f", component="InfoBar", variant="band", anchor="bottom",
+                                      content={"items": ["a@b.edu"], "fill": "accent", "text_color": "text"}))
+    p.components[1].content.update({"title_color": "accent", "title_style": "accent_first"})
+    before = [c.model_dump() for c in p.components]
+    apply_look(p, KCT, LOOKS["brand_blue"])
+    assert [c.model_dump() for c in p.components] == before  # header (with its lines), footer, colours and title treatment untouched
+    assert p.background.kind == "gradient" and p.type_style == "bold" and p.look == "brand_blue"
+
+
+
+def test_a_plain_look_keeps_the_planners_two_tone_panel():
+    from poster_agent.plan.schema import PlanPanel
+    p = plan(art=False, hero=False)
+    p.background.panel = PlanPanel(color="primary", starts_at="title")
+    apply_look(p, KCT, LOOKS["tint_soft"])
+    assert p.background.kind == "gradient" and p.background.panel is not None and p.background.panel.starts_at == "title"

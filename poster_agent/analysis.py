@@ -75,6 +75,27 @@ def analyse_image(img: Image.Image, width: float, height: float) -> ArtMap:
     return ArtMap(busy=busy, subject=_norm(sal, 20.0, 98.0), width=width, height=height)
 
 
+CALM_DETAIL = 0.010  # mean luminance gradient (0..1, on a ~270 px wide raster) under text at or below which type sits comfortably on art
+
+
+def text_detail(img: Image.Image, boxes: list[Box], width: float, height: float) -> float:
+    """ABSOLUTE fine detail under text boxes: the mean luminance gradient inside the boxes, on a fixed-size raster so pictures compare.
+    (ArtMap.busy is normalised per picture, so it cannot say whether a picture is calm in absolute terms.)"""
+    small = img.convert("L").resize((270, max(int(270 * height / width), 8)))
+    a = np.asarray(small, dtype=float) / 255.0
+    gy, gx = np.gradient(a)
+    g = np.hypot(gx, gy)
+    rows, cols = g.shape
+    vals, weights = [], []
+    for b in boxes:
+        x0, x1 = int(max(b.x, 0) / width * cols), int(np.ceil(min(b.right, width) / width * cols))
+        y0, y1 = int(max(b.y, 0) / height * rows), int(np.ceil(min(b.bottom, height) / height * rows))
+        cell = g[y0:max(y1, y0 + 1), x0:max(x1, x0 + 1)]
+        vals.append(float(cell.mean()))
+        weights.append(b.w * b.h)
+    return float(np.average(vals, weights=weights)) if vals else 0.0
+
+
 def analyse(spec: PosterSpec, root) -> ArtMap | None:
     """ArtMap of the poster's generated or supplied background, or None for plain solid / gradient grounds (nothing to avoid)."""
     from poster_agent.layout.adapt import ground_raster

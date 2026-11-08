@@ -106,6 +106,34 @@ def calm_art(img: Image.Image, tint_hex: str, strength: float | None = None) -> 
     return res, {"strength": round(overall, 2), "aspects": {a: round(x, 2) for a, x in k.items()}, "before": before, "after": art_energy(res)}
 
 
+def calm_under_text(img: Image.Image, boxes: list, width: float, height: float, wash_hex: str, target: float
+                    ) -> tuple[Image.Image, dict]:
+    """Soften the picture ONLY where text sits: a feathered blur plus a wash of `wash_hex` inside the (padded) text boxes, repeated
+    (stronger each pass) until the fine detail under the text is at or below `target`. The rest of the picture is untouched, so it keeps
+    its full colour and contrast. Deterministic; generated art only."""
+    from poster_agent.analysis import text_detail
+    rgb = img.convert("RGB")
+    sx, sy = rgb.width / width, rgb.height / height
+    pad = 0.025 * width
+    mask = Image.new("L", rgb.size, 0)
+    from PIL import ImageDraw
+    d = ImageDraw.Draw(mask)
+    for b in boxes:
+        d.rounded_rectangle(((b.x - pad) * sx, (b.y - pad) * sy, (b.right + pad) * sx, (b.bottom + pad) * sy), radius=pad * sx, fill=255)
+    mask = mask.filter(ImageFilter.GaussianBlur(radius=0.5 * pad * sx))  # feathered: no visible edge
+    wash = Image.new("RGB", rgb.size, tuple(int(wash_hex[i:i + 2], 16) for i in (1, 3, 5)))
+    before = text_detail(rgb, boxes, width, height)
+    out, passes = rgb, 0
+    for p in range(3):
+        if text_detail(out, boxes, width, height) <= target:
+            break
+        passes = p + 1
+        soft = out.filter(ImageFilter.GaussianBlur(radius=rgb.width / 1080.0 * 3.0 * (p + 1)))
+        soft = Image.blend(soft, wash, 0.22 + 0.12 * p)
+        out = Image.composite(soft, out, mask)
+    return out, {"before": round(before, 4), "after": round(text_detail(out, boxes, width, height), 4), "passes": passes, "target": target}
+
+
 def calm_background(path: Path, brand: BrandProfile, tone: str) -> str:
     """Calm the generated background file in place (the untouched original is kept as <name>_raw.png). Returns a one-line note."""
     path = Path(path)

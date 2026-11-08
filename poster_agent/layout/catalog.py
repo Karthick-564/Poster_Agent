@@ -38,6 +38,16 @@ CATALOG: dict[str, dict[str, Any]] = {
         "required": ["title"], "text_keys": ["eyebrow", "title", "subtitle", "tagline"], "asset_keys": [],
         "color_keys": ["eyebrow_color", "title_color", "subtitle_color", "tagline_color"], "font_keys": ["title_font"],
     },
+    "PullQuote": {
+        "desc": "A large quotation with its attribution under a short accent rule: for tributes, quotes, mission statements. Use the "
+                "brief's own words; variant 'large' sets the quote bigger.",
+        "variants": ["default", "large"],
+        "content": {"quote": "text (verbatim, marks included if the brief has them)", "attribution": "text (verbatim)",
+                    "align": "left|center|right", "quote_color": "colour", "attribution_color": "colour", "rule": "bool accent rule above",
+                    "rule_color": "colour", "font_role": "font role", "max_lines": "int"},
+        "required": ["quote"], "text_keys": ["quote", "attribution"], "asset_keys": [],
+        "color_keys": ["quote_color", "attribution_color", "rule_color"], "font_keys": ["font_role"],
+    },
     "TextBlock": {
         "desc": "A block of text. role: title|heading|subtitle|body|caption|label|micro.",
         "variants": ["default"],

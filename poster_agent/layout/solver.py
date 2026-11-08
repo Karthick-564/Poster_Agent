@@ -27,8 +27,14 @@ MIN_SLACK_FOR_GROWTH = 0.10  # only if at least 10% of the available height is u
 MAX_GAP_GROWTH = 1.35
 
 
+PANEL_AIR = 0.05  # extra space (fraction of canvas height) above the component a ground panel starts at: the block's edge needs room
+
+
 def _gap(ctx: Ctx, spec: ComponentSpec, gap_scale: float = 1.0) -> float:
-    return BASE_GAP * ctx.canvas.height * ctx.scale * gap_scale * EMPHASIS_GAP[spec.emphasis]
+    gap = BASE_GAP * ctx.canvas.height * ctx.scale * gap_scale * EMPHASIS_GAP[spec.emphasis]
+    if getattr(ctx, "panel_start", None) == spec.id:  # the panel's top edge sits in this gap, so the previous row does not touch it
+        gap += PANEL_AIR * ctx.canvas.height * ctx.scale
+    return gap
 
 
 def _component(spec: ComponentSpec):
@@ -73,6 +79,7 @@ def _ground(spec: PosterSpec) -> str | None:
 def solve_layout(spec: PosterSpec, brand: BrandProfile, measurer: TextMeasurer | None = None) -> LayoutResult:
     canvas = spec.canvas
     ctx = Ctx(brand, canvas, measurer or TextMeasurer(), dict(spec.assets), align=spec.align, type_style=spec.type_style, ground=_ground(spec))
+    ctx.panel_start = (spec.background.panel or {}).get("starts_at")
     safe = canvas.safe_box
     top = [c for c in spec.components if c.anchor == "top"]
     bottom = [c for c in spec.components if c.anchor == "bottom"]
@@ -246,6 +253,19 @@ def solve_layout(spec: PosterSpec, brand: BrandProfile, measurer: TextMeasurer |
         els = _component(c).place(c, ctx, Box(x=0, y=stand - h, w=canvas.width, h=h))
         placed += els
         bleed |= {e.id for e in els}
+
+    pn = spec.background.panel
+    if pn:  # two-tone ground: a full-bleed block from just above the named component to the bottom edge, under all content
+        start = [e.box.y for e in placed if e.id == pn["starts_at"] or e.id.startswith(pn["starts_at"] + ".") or e.source_component == pn["starts_at"]]
+        if start:
+            py = max(min(start) - 0.025 * canvas.height, 0.25 * canvas.height)
+            bar = PlacedElement(id="ground_panel", kind=ElementKind.shape, role="info_bar", z=1,
+                                box=Box(x=0, y=py, w=canvas.width, h=canvas.height - py), props={"fill": pn["color"]})
+            placed.append(bar)
+            bleed.add(bar.id)
+        else:
+            ctx.issue(IssueCategory.fit, f"the ground panel starts at {pn['starts_at']!r}, which is not a placed component", [],
+                      "use the id of a flow component in the lower half of the poster")
 
     clear = brand.logo_rules.clear_space_mm * MM_TO_PT + 4.0  # brand rule: the logo sits on a flat field with clear space
     keepout = [e.box.expand(clear) for e in placed if e.locked and e.kind == ElementKind.image]

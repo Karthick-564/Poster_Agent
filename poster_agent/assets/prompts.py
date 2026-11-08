@@ -38,6 +38,10 @@ class ArtDirection(BaseModel):
     medium: str = "digital illustration"
     tone: str = "light"  # light | dark — which text colour the art must support
     palette: list[str] = Field(default_factory=list)  # #hex
+    subject: str = ""  # the focal subject and where it sits
+    composition: str = ""  # camera, depth layers, quiet space
+    devices: str = ""  # graphic structure (curved horizon, light beam, layered shapes)
+    color_roles: str = ""  # dominant / accent colours and the light
 
 
 @dataclass
@@ -245,15 +249,24 @@ def flux_prompt(art: ArtDirection, calm: CalmLayout | str) -> str:
     """Prose caption for FLUX. Describes the scene and where it is busy/calm as a picture, never as a rule or a negation."""
     if isinstance(calm, str):
         calm = CalmLayout(text=calm)
+    sentence = lambda label, text: f"{label}: {text.strip().rstrip('.')}."
     parts = [art.description.strip().rstrip(".") + "."]
+    if art.subject.strip():
+        parts.append(sentence("Focal subject", art.subject))
+    if art.composition.strip():
+        parts.append(sentence("Composition", art.composition))
+    if art.devices.strip():
+        parts.append(sentence("Graphic structure", art.devices))
     if art.style.strip():
         parts.append(art.style.strip().rstrip(".").capitalize() + ".")
     if art.lighting.strip():
         parts.append(art.lighting.strip().rstrip(".").capitalize() + ".")
     colors = color_words(art.palette)
-    if colors:
+    if art.color_roles.strip():
+        parts.append(sentence("Colour roles", art.color_roles) + (f" Brand hues: {colors}." if colors else ""))
+    elif colors:
         parts.append(f"The colour palette is {colors}.")
-    parts.append("The whole image is a soft, muted backdrop with gentle gradients and low contrast, quiet enough for text to sit on it.")
+    parts.append("A full-bleed key visual with rich colour, strong depth and clear focal lighting, composed as a poster background.")
     if calm.text:
         parts.append(calm.text.rstrip(".") + ".")
     focus = focus_phrase(calm.busy_ranges)
